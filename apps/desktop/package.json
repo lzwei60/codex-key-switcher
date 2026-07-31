@@ -1,0 +1,96 @@
+{
+  "name": "@codex-key-switcher/desktop",
+  "version": "0.1.0",
+  "description": "Cross-platform Codex local gateway provider switcher.",
+  "author": "Codex Key Switcher",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @codex-key-switcher/web dev\" \"tsx src/main/main.ts\"",
+    "build": "pnpm --filter @codex-key-switcher/web build && pnpm build:main",
+    "build:main": "pnpm clean && esbuild src/main/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/main/main.js --external:electron --external:sql.js && esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --target=node22 --outfile=dist/preload/preload.cjs --external:electron",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "icons": "node ../../scripts/generate-icons.mjs",
+    "pack": "pnpm build && electron-builder --dir",
+    "dist": "pnpm build && electron-builder",
+    "dist:mac": "pnpm build && electron-builder --mac",
+    "dist:mac:x64": "pnpm build && electron-builder --mac --x64",
+    "dist:mac:arm64": "pnpm build && electron-builder --mac --arm64",
+    "dist:win": "pnpm build && electron-builder --win --x64",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@codex-key-switcher/core": "workspace:*",
+    "@codex-key-switcher/shared": "workspace:*",
+    "@types/sql.js": "^1.4.11",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.0.12",
+    "esbuild": "0.28.1",
+    "tsx": "^4.19.2"
+  },
+  "build": {
+    "appId": "com.codexkeyswitcher.app",
+    "productName": "Codex Key Switcher",
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "dist/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/out",
+        "to": "web/out",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/sql.js/dist",
+        "to": "sql.js",
+        "filter": [
+          "sql-wasm.js",
+          "sql-wasm.wasm"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        "dmg"
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "sql.js": "^1.14.1"
+  }
+}

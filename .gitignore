@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+dist
+release
+.playwright-cli
+.vite
+*.log
+.DS_Store
+coverage
+*.tsbuildinfo
