@@ -25,11 +25,30 @@ pnpm install
 pnpm dev
 ```
 
+Quality checks before merging:
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
 ## User Guides
 
 - [中文使用说明](docs/USER_GUIDE.zh-CN.md)
 - [English User Guide](docs/USER_GUIDE.en-US.md)
 
+## Open Source Governance
+
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Repository governance and branch protection checklist](docs/OPEN_SOURCE_GOVERNANCE.md)
+
 ## Migration Status
 
 This repository currently contains the cross-platform shell and typed service boundaries. The next step is to port behavior module-by-module from `legacy/macos-appkit/Sources`.
+
+## License
+
+[MIT](LICENSE)
