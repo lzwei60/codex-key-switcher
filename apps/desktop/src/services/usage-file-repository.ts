@@ -3,13 +3,15 @@ import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { Database as SQLiteDatabase, InitSqlJsStatic, SqlJsStatic, SqlValue } from 'sql.js';
-import type {
-  UsageAggregateRow,
-  UsageRecord,
-  UsageStatsInput,
-  UsageStatsSnapshot,
-  UsageSummary,
-  UsageTrendRow,
+import {
+  defaultUsageSettings,
+  type UsageAggregateRow,
+  type UsageRecord,
+  type UsageSettings,
+  type UsageStatsInput,
+  type UsageStatsSnapshot,
+  type UsageSummary,
+  type UsageTrendRow,
 } from '@codex-key-switcher/shared';
 import type { UsageRepository } from '@codex-key-switcher/core';
 import { ensurePrivateDirectory, readJsonFile } from './json-file';
@@ -59,10 +61,20 @@ interface CountRow {
   total: number;
 }
 
+interface UsageAggregateCache {
+  summary: UsageSummary;
+  trendRows: UsageTrendRow[];
+  providerRows: UsageAggregateRow[];
+  modelRows: UsageAggregateRow[];
+  total: number;
+}
+
 const legacyJsonFileName = 'usage-records.json';
 const sqliteFileName = 'usage.sqlite';
 const sqlWasmJsFileName = 'sql-wasm.js';
 const sqlWasmFileName = 'sql-wasm.wasm';
+const persistDebounceMs = 1_000;
+const retentionCleanupIntervalMs = 60 * 60 * 1_000;
 const nodeRequire = createRequire(import.meta.url);
 let initSqlJsFactory: InitSqlJsStatic | null = null;
 let sqlJsModule: Promise<SqlJsStatic> | null = null;
@@ -70,6 +82,12 @@ let sqlJsModule: Promise<SqlJsStatic> | null = null;
 export class UsageFileRepository implements UsageRepository {
   private database: SQLiteDatabase | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  private persistTimer: NodeJS.Timeout | null = null;
+  private dirty = false;
+  private aggregateCache: UsageAggregateCache | null = null;
+  private settings: UsageSettings = { ...defaultUsageSettings };
+  private nextRetentionCleanupAt = 0;
+  private recordCount: number | null = null;
   private readonly databasePath: string;
   private readonly legacyJsonPath: string;
 
@@ -79,28 +97,47 @@ export class UsageFileRepository implements UsageRepository {
   }
 
   async record(record: UsageRecord): Promise<void> {
-    this.writeQueue = this.writeQueue.then(async () => {
-      const database = await this.open();
+    if (!this.settings.enabled) return;
+    await this.enqueueWrite(async (database) => {
       insertUsageRecord(database, record);
-      await this.persist(database);
+      this.recordCount = (this.recordCount ?? 0) + 1;
+      this.pruneExpiredRecordsIfNeeded(database);
+      this.invalidateAggregateCache();
+      this.markDirty();
     });
-    await this.writeQueue;
+  }
+
+  async configure(settings: UsageSettings): Promise<void> {
+    this.settings = normalizeUsageSettings(settings);
+    this.nextRetentionCleanupAt = 0;
+    await this.enqueueWrite((database) => {
+      if (this.pruneExpiredRecordsIfNeeded(database, true)) {
+        this.invalidateAggregateCache();
+        this.markDirty();
+      }
+    });
   }
 
   async snapshot(): Promise<UsageRecord[]> {
+    await this.writeQueue;
     const database = await this.open();
     const rows = getAll<UsageRow>(database, 'SELECT * FROM usage_records ORDER BY created_at DESC, rowid DESC');
     return rows.map(recordFromRow);
   }
 
   async stats(input: UsageStatsInput): Promise<UsageStatsSnapshot> {
+    await this.enqueueWrite((database) => {
+      if (this.pruneExpiredRecordsIfNeeded(database)) {
+        this.invalidateAggregateCache();
+        this.markDirty();
+      }
+    });
     const database = await this.open();
     // Keep large request histories inside SQLite; the renderer only receives the current log page.
     const pageSize = clampInteger(input.logPageSize, 1, 200, 10);
     const page = clampInteger(input.logPage, 1, Number.MAX_SAFE_INTEGER, 1);
     const offset = (page - 1) * pageSize;
-    const summary = usageSummary(database);
-    const total = getOne<CountRow>(database, 'SELECT COUNT(*) AS total FROM usage_records')?.total ?? 0;
+    const aggregate = this.aggregateStats(database);
     const rows = getAll<UsageRow>(
       database,
       'SELECT * FROM usage_records ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?',
@@ -108,13 +145,13 @@ export class UsageFileRepository implements UsageRepository {
     );
 
     return {
-      summary,
-      trendRows: usageTrendRows(database),
-      providerRows: usageAggregateRows(database, 'provider'),
-      modelRows: usageAggregateRows(database, 'model'),
+      summary: { ...aggregate.summary },
+      trendRows: aggregate.trendRows.map((row) => ({ ...row })),
+      providerRows: aggregate.providerRows.map((row) => ({ ...row })),
+      modelRows: aggregate.modelRows.map((row) => ({ ...row })),
       logs: {
         records: rows.map(recordFromRow),
-        total,
+        total: aggregate.total,
         page,
         pageSize,
       },
@@ -122,17 +159,27 @@ export class UsageFileRepository implements UsageRepository {
   }
 
   async clearLogs(): Promise<UsageStatsSnapshot> {
-    this.writeQueue = this.writeQueue.then(async () => {
-      const database = await this.open();
+    this.clearPersistTimer();
+    await this.enqueueWrite(async (database) => {
       run(database, 'DELETE FROM usage_records');
-      await this.persist(database);
+      this.recordCount = 0;
+      this.nextRetentionCleanupAt = Date.now() + retentionCleanupIntervalMs;
+      this.invalidateAggregateCache();
+      this.dirty = true;
+      await this.flushDirty(database);
       await Promise.all([
         fs.rm(this.legacyJsonPath, { force: true }),
         fs.rm(`${this.legacyJsonPath}.migrated`, { force: true }),
       ]);
     });
-    await this.writeQueue;
     return this.stats({ logPage: 1, logPageSize: 10 });
+  }
+
+  async flush(): Promise<void> {
+    this.clearPersistTimer();
+    await this.writeQueue;
+    const database = await this.open();
+    await this.flushDirty(database);
   }
 
   private async open(): Promise<SQLiteDatabase> {
@@ -146,6 +193,7 @@ export class UsageFileRepository implements UsageRepository {
     migrateSchema(database);
     await this.migrateLegacyJson(database);
     this.database = database;
+    this.recordCount = getOne<CountRow>(database, 'SELECT COUNT(*) AS total FROM usage_records')?.total ?? 0;
     return database;
   }
 
@@ -183,6 +231,92 @@ export class UsageFileRepository implements UsageRepository {
     await this.persist(database);
     await fs.rename(this.legacyJsonPath, `${this.legacyJsonPath}.migrated`).catch(() => undefined);
   }
+
+  private aggregateStats(database: SQLiteDatabase): UsageAggregateCache {
+    if (this.aggregateCache) return this.aggregateCache;
+    const aggregate: UsageAggregateCache = {
+      summary: usageSummary(database),
+      trendRows: usageTrendRows(database),
+      providerRows: usageAggregateRows(database, 'provider'),
+      modelRows: usageAggregateRows(database, 'model'),
+      total: getOne<CountRow>(database, 'SELECT COUNT(*) AS total FROM usage_records')?.total ?? 0,
+    };
+    this.aggregateCache = aggregate;
+    return aggregate;
+  }
+
+  private invalidateAggregateCache(): void {
+    this.aggregateCache = null;
+  }
+
+  private enqueueWrite(operation: (database: SQLiteDatabase) => Promise<void> | void): Promise<void> {
+    const nextWrite = this.writeQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const database = await this.open();
+        await operation(database);
+      });
+    this.writeQueue = nextWrite;
+    return nextWrite;
+  }
+
+  private markDirty(): void {
+    this.dirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void this.flush().catch((error) => {
+        console.error('Failed to flush usage records:', error);
+      });
+    }, persistDebounceMs);
+  }
+
+  private clearPersistTimer(): void {
+    if (!this.persistTimer) return;
+    clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+  }
+
+  private async flushDirty(database: SQLiteDatabase): Promise<void> {
+    if (!this.dirty) return;
+    this.dirty = false;
+    try {
+      await this.persist(database);
+    } catch (error) {
+      this.dirty = true;
+      throw error;
+    }
+  }
+
+  private pruneExpiredRecordsIfNeeded(database: SQLiteDatabase, force = false): boolean {
+    const now = Date.now();
+    const exceedsRecordLimit = (this.recordCount ?? 0) > this.settings.maxRecords;
+    if (!force && now < this.nextRetentionCleanupAt && !exceedsRecordLimit) return false;
+
+    const previousCount = this.recordCount ?? getOne<CountRow>(database, 'SELECT COUNT(*) AS total FROM usage_records')?.total ?? 0;
+    const expiresAt = now - this.settings.retentionDays * 24 * 60 * 60 * 1_000;
+    run(database, 'DELETE FROM usage_records WHERE created_at < ?', [expiresAt]);
+    run(database, `
+      DELETE FROM usage_records
+      WHERE rowid NOT IN (
+        SELECT rowid
+        FROM usage_records
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+      )
+    `, [this.settings.maxRecords]);
+    this.recordCount = getOne<CountRow>(database, 'SELECT COUNT(*) AS total FROM usage_records')?.total ?? 0;
+    this.nextRetentionCleanupAt = now + retentionCleanupIntervalMs;
+    return this.recordCount !== previousCount;
+  }
+}
+
+function normalizeUsageSettings(settings: UsageSettings): UsageSettings {
+  return {
+    enabled: Boolean(settings.enabled),
+    retentionDays: clampInteger(settings.retentionDays, 1, 365, defaultUsageSettings.retentionDays),
+    maxRecords: clampInteger(settings.maxRecords, 100, 100_000, defaultUsageSettings.maxRecords),
+  };
 }
 
 function usageSummary(database: SQLiteDatabase): UsageSummary {

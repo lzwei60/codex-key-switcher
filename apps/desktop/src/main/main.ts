@@ -3,28 +3,35 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type {
-  ApiFormat,
-  AppPreferences,
-  AppStartupSettings,
-  ConnectionMode,
-  CodexConfigDirectorySettings,
-  GatewayStatus,
-  PortCheckResult,
-  Provider,
-  ProviderInput,
-  ProviderModel,
-  ProviderModelsListInput,
-  ProviderModelsListResult,
-  ProviderModelValidationInput,
-  ProviderModelValidationResult,
-  DiagnosticsReport,
-  RouteSettings,
+import {
+  defaultUsageSettings,
+  type ApiFormat,
+  type AppPreferences,
+  type AppStartupSettings,
+  type AppUpdateInfo,
+  type AppUpdatePlatformKey,
+  type ConnectionMode,
+  type CodexConfigDirectorySettings,
+  type DirectSessionTarget,
+  type GatewayStatus,
+  type PortCheckResult,
+  type Provider,
+  type ProviderInput,
+  type ProviderModel,
+  type ProviderModelsListInput,
+  type ProviderModelsListResult,
+  type ProviderModelValidationInput,
+  type ProviderModelValidationResult,
+  type DiagnosticsReport,
+  type RouteSettings,
+  type RouteSettingsSaveResult,
+  type UsageSettings,
 } from '@codex-key-switcher/shared';
 import {
   CodexConfigService,
   ProviderService,
   UsageService,
+  directSessionTargetForProvider,
   providerSelectedDisplayModel,
   providerSelectedModel,
 } from '@codex-key-switcher/core';
@@ -37,6 +44,9 @@ import { UsageFileRepository } from '../services/usage-file-repository';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
+const releaseApiUrl = 'https://api.github.com/repos/lzwei60/codex-key-switcher/releases/latest';
+const releaseLatestPageUrl = 'https://github.com/lzwei60/codex-key-switcher/releases/latest';
+const releaseBaseUrl = 'https://github.com/lzwei60/codex-key-switcher';
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -55,6 +65,8 @@ let gatewayStatusCache: GatewayStatus = {
     ? `http://127.0.0.1:${defaultRouteSettings().listenPort}/v1`
     : 'http://127.0.0.1:3456/v1',
 };
+
+const directSessionTargetKey = 'directSessionTarget';
 
 async function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -204,22 +216,50 @@ async function updateTrayMenu(): Promise<void> {
 }
 
 async function switchTrayProvider(providerId: string): Promise<void> {
-  await switchCurrentProviderTransactionally(providerId);
+  const [routeSettings, targetProvider] = await Promise.all([
+    getRouteSettings().catch(() => defaultRouteSettings()),
+    getProviderService().list()
+      .then((providers) => providers.find((provider) => provider.id === providerId))
+      .catch(() => undefined),
+  ]);
+  if (routeSettings.mode === 'direct_provider' && targetProvider?.apiFormat === 'chat_completions') {
+    await notifyTrayProviderSwitchFailure(providerId, new Error('直连供应商模式不支持 Chat Completions 格式供应商。'));
+    await updateTrayMenu();
+    return;
+  }
+
+  try {
+    await switchCurrentProviderTransactionally(providerId);
+  } catch (error) {
+    await notifyTrayProviderSwitchFailure(providerId, error);
+    await updateTrayMenu();
+  }
 }
 
 async function switchTrayModel(providerId: string, model: string): Promise<void> {
   await switchSelectedModelTransactionally(providerId, model);
 }
 
-async function notifyConversationSwitch(kind: 'provider' | 'model'): Promise<void> {
+async function notifyConversationSwitch(input: {
+  previousProvider?: Provider | null;
+  nextProvider?: Provider | null;
+  switchedTarget: 'provider' | 'model';
+}): Promise<void> {
   const routeSettings = await getRouteSettings();
   const isDirectMode = routeSettings.mode === 'direct_provider';
-  const switchedTarget = kind === 'provider' ? '供应商' : '模型';
-  const title = isDirectMode ? '重启Codex' : '建议打开新会话';
+  const providerChanged = Boolean(
+    input.previousProvider
+    && input.nextProvider
+    && input.previousProvider.id !== input.nextProvider.id,
+  );
+  const switchedTarget = input.switchedTarget === 'provider' ? '供应商' : '模型';
+  const title = '建议打开新会话';
   const message = `${switchedTarget}已切换`;
-  const detail = isDirectMode
-    ? `直连模式已写入新的${switchedTarget}配置。请重启Codex以确保配置生效。`
-    : `已有 Codex 会话可能继续使用旧上下文。建议打开一个新会话以确保${switchedTarget}配置立即生效。`;
+  const detail = directSwitchDetail({
+    isDirectMode,
+    providerChanged,
+    nextProvider: input.nextProvider,
+  });
   if (Notification.isSupported()) {
     new Notification({
       title,
@@ -243,6 +283,66 @@ async function notifyConversationSwitch(kind: 'provider' | 'model'): Promise<voi
   result.catch(() => undefined);
 }
 
+function directSwitchDetail(input: {
+  isDirectMode: boolean;
+  providerChanged: boolean;
+  nextProvider: Provider | null | undefined;
+}): string {
+  if (!input.isDirectMode) {
+    return '已有 Codex 会话可能继续使用旧上下文。建议打开一个新会话以确保新配置立即生效。';
+  }
+
+  const target = input.nextProvider
+    ? `${input.nextProvider.name} / ${providerSelectedDisplayModel(input.nextProvider)}`
+    : '新供应商配置';
+
+  if (input.providerChanged) {
+    return `直连模式已写入「${target}」。请在 Codex 新开会话；如果新会话仍未生效，再重启 Codex。`;
+  }
+
+  return `直连模式已写入「${target}」。请在 Codex 新开会话以使用新模型，当前已运行会话可能仍使用旧模型。`;
+}
+
+async function notifyTrayProviderSwitchFailure(providerId: string, error: unknown): Promise<void> {
+  const provider = (await getProviderService().list().catch(() => [] as Provider[]))
+    .find((item) => item.id === providerId);
+  const reason = error instanceof Error ? error.message : '供应商切换失败。';
+  const isChatProvider = provider?.apiFormat === 'chat_completions';
+  const message = provider
+    ? `供应商「${provider.name}」未切换。`
+    : '供应商未切换。';
+  const detail = isChatProvider
+    ? '当前处于直连供应商模式，Chat Completions 格式必须通过本地路由完成协议转换。请切换到本地路由模式，或选择 Responses 格式供应商。'
+    : reason;
+
+  showProviderSwitchFailureMessage({ message, detail });
+}
+
+function showProviderSwitchFailureMessage(input: { message: string; detail: string }): void {
+  const title = '无法切换供应商';
+  if (Notification.isSupported()) {
+    new Notification({
+      title,
+      body: `${input.message}\n${input.detail}`,
+      silent: false,
+    }).show();
+    return;
+  }
+
+  const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const options: MessageBoxOptions = {
+    type: 'warning',
+    title,
+    message: input.message,
+    detail: input.detail,
+    buttons: ['知道了'],
+    defaultId: 0,
+    noLink: true,
+  };
+  const result = window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options);
+  result.catch(() => undefined);
+}
+
 async function switchCurrentProviderTransactionally(providerId: string): Promise<void> {
   const providerService = getProviderService();
   const previousProvider = await providerService.current();
@@ -257,7 +357,11 @@ async function switchCurrentProviderTransactionally(providerId: string): Promise
   try {
     await syncCodexForCurrentMode();
     await refreshGatewayStatus();
-    await notifyConversationSwitch('provider');
+    await notifyConversationSwitch({
+      previousProvider,
+      nextProvider,
+      switchedTarget: 'provider',
+    });
   } catch (error) {
     if (previousProvider) await providerService.setCurrent(previousProvider.id).catch(() => undefined);
     await syncCodexForCurrentMode().catch(() => undefined);
@@ -282,7 +386,11 @@ async function switchSelectedModelTransactionally(providerId: string, model: str
   try {
     await syncCodexForCurrentMode();
     await refreshGatewayStatus();
-    await notifyConversationSwitch('model');
+    await notifyConversationSwitch({
+      previousProvider,
+      nextProvider,
+      switchedTarget: 'model',
+    });
   } catch (error) {
     await providerService.setSelectedModel(providerId, previousProvider.selectedModel).catch(() => undefined);
     await syncCodexForCurrentMode().catch(() => undefined);
@@ -391,10 +499,15 @@ function registerIpcHandlers() {
   ipcMain.handle('app:codex-config-directory', () => getCodexConfigDirectorySettings());
   ipcMain.handle('app:save-codex-config-directory', (_event, directory: string) => saveCodexConfigDirectory(directory));
   ipcMain.handle('app:choose-codex-config-directory', () => chooseCodexConfigDirectory());
+  ipcMain.handle('app:check-for-updates', () => checkForAppUpdates());
+  ipcMain.handle('app:open-update-download', (_event, downloadUrl: string) => openUpdateDownload(downloadUrl));
   ipcMain.handle('providers:list', () => getProviderService().list());
   ipcMain.handle('providers:save', async (_event, input: ProviderInput) => {
     await validateProviderInputModels(input);
-    const hadProviders = (await getProviderService().list()).length > 0;
+    const providerService = getProviderService();
+    const providers = await providerService.list();
+    await assertProviderSaveSupportsCurrentMode(input, providers);
+    const hadProviders = providers.length > 0;
     const provider = await getProviderService().upsert(input);
     await syncCodexForCurrentMode();
     await notifyFirstProviderRouteAppliedIfNeeded(hadProviders);
@@ -431,9 +544,14 @@ function registerIpcHandlers() {
   ipcMain.handle('diagnostics:prepare-uninstall', () => prepareDiagnosticsUninstall());
   ipcMain.handle('diagnostics:open-restore-script-directory', () => openRestoreScriptDirectory());
   ipcMain.handle('diagnostics:copy-report', () => copyDiagnosticsReport());
-  ipcMain.handle('usage:snapshot', () => getUsageService().snapshot());
   ipcMain.handle('usage:stats', (_event, input) => getUsageService().stats(input));
   ipcMain.handle('usage:clear-logs', () => getUsageService().clearLogs());
+  ipcMain.handle('usage:settings', () => getUsageSettings());
+  ipcMain.handle('usage:save-settings', async (_event, input: UsageSettings) => {
+    const settings = await saveUsageSettings(input);
+    await getUsageService().configure(settings);
+    return settings;
+  });
 }
 
 async function readDiagnosticsReport(): Promise<DiagnosticsReport> {
@@ -448,6 +566,7 @@ async function readDiagnosticsReport(): Promise<DiagnosticsReport> {
   const restoreAvailable = await fileExists(restoreScriptPath);
   const healthStatus = healthStatusText(routeSettings, gatewayStatus, codexUsesGateway, restoreAvailable);
   const report: DiagnosticsReport = {
+    appVersion: app.getVersion(),
     connectionMode: routeSettings.mode,
     routeEnabled: routeSettings.enabled,
     codexUsesGateway,
@@ -464,8 +583,10 @@ async function readDiagnosticsReport(): Promise<DiagnosticsReport> {
       ...(!restoreAvailable ? ['未找到恢复脚本。'] : []),
     ],
   };
+  if (gatewayStatus.currentProviderId) report.currentProviderId = gatewayStatus.currentProviderId;
   if (gatewayStatus.currentProviderName) report.currentProviderName = gatewayStatus.currentProviderName;
   if (gatewayStatus.currentModel) report.currentModel = gatewayStatus.currentModel;
+  if (gatewayStatus.directSessionTarget) report.directSessionTarget = gatewayStatus.directSessionTarget;
   return report;
 }
 
@@ -512,6 +633,7 @@ async function copyDiagnosticsReport(): Promise<void> {
 function diagnosticsReportText(report: DiagnosticsReport): string {
   return [
     'Codex Key Switcher 诊断信息',
+    `应用版本：${report.appVersion}`,
     `健康状态：${report.healthStatus}`,
     `连接模式：${connectionModeLabel(report.connectionMode)}`,
     `本地路由：${report.routeEnabled ? '已启用' : '已停用'}`,
@@ -521,10 +643,15 @@ function diagnosticsReportText(report: DiagnosticsReport): string {
     `恢复备份：${report.restoreAvailable ? '可用' : '不可用'}`,
     `当前供应商：${report.currentProviderName ?? '未选择'}`,
     `当前模型：${report.currentModel ?? '未选择'}`,
+    `直连Session：${report.directSessionTarget ? directSessionSummary(report.directSessionTarget) : '未应用'}`,
     `Codex 目录：${report.codexDirectory}`,
     `恢复脚本：${report.restoreScriptPath}`,
     `问题：${report.issues.length ? report.issues.join('；') : '无'}`,
   ].join('\n');
+}
+
+function directSessionSummary(target: DirectSessionTarget): string {
+  return `${target.providerName} / ${target.displayModel} (${target.modelName}) @ ${target.baseURL}`;
 }
 
 async function getStartupSettings(): Promise<AppStartupSettings> {
@@ -569,6 +696,286 @@ function startupPlatform(): AppStartupSettings['platform'] {
   return 'other';
 }
 
+async function checkForAppUpdates(): Promise<AppUpdateInfo> {
+  const currentVersion = app.getVersion();
+  const platform = updatePlatformKey();
+
+  if (platform === 'unsupported') {
+    return {
+      currentVersion,
+      platform,
+      status: 'unsupported-platform',
+      errorMessage: `当前平台暂未提供安装包：${process.platform}-${process.arch}`,
+    };
+  }
+
+  try {
+    const release = await fetchLatestReleaseInfo(currentVersion);
+    if (!release || !release.version) {
+      return {
+        currentVersion,
+        platform,
+        status: 'not-configured',
+        errorMessage: '最新 Release 缺少有效版本号。',
+      };
+    }
+
+    return updateInfoFromRelease(release, currentVersion, platform);
+  } catch (error) {
+    return {
+      currentVersion,
+      platform,
+      status: 'error',
+      errorMessage: error instanceof Error ? error.message : '检查更新失败。',
+    };
+  }
+}
+
+async function fetchLatestReleaseInfo(currentVersion: string): Promise<GitHubReleaseInfo | null> {
+  const apiResponse = await fetch(releaseApiUrl, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': `Codex-Key-Switcher/${currentVersion}`,
+    },
+  });
+
+  if (apiResponse.ok) return normalizeGitHubRelease(await apiResponse.json());
+  if (apiResponse.status === 404) return null;
+
+  const apiError = await githubErrorMessage(apiResponse);
+  const fallback = await fetchLatestReleaseFromPage(currentVersion).catch(() => null);
+  if (fallback) return fallback;
+  throw new Error(apiError || `检查更新失败：GitHub 返回 ${apiResponse.status}`);
+}
+
+async function fetchLatestReleaseFromPage(currentVersion: string): Promise<GitHubReleaseInfo | null> {
+  const response = await fetch(releaseLatestPageUrl, {
+    headers: {
+      Accept: 'text/html',
+      'User-Agent': `Codex-Key-Switcher/${currentVersion}`,
+    },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`GitHub Releases 页面返回 ${response.status}`);
+
+  const html = await response.text();
+  const responseUrl = response.url || releaseLatestPageUrl;
+  const tagName = releaseTagFromUrl(responseUrl) || releaseTagFromHtml(html);
+  if (!tagName) return null;
+  const assets = releaseAssetsFromHtml(html);
+  return {
+    tagName,
+    name: tagName,
+    version: normalizeReleaseVersion(tagName),
+    htmlUrl: tagName ? `${releaseBaseUrl}/releases/tag/${encodeURIComponent(tagName)}` : releaseLatestPageUrl,
+    assets,
+  };
+}
+
+function updateInfoFromRelease(release: GitHubReleaseInfo, currentVersion: string, platform: AppUpdatePlatformKey): AppUpdateInfo {
+  const asset = selectUpdateAsset(release.assets, platform);
+  const result: AppUpdateInfo = {
+    currentVersion,
+    platform,
+    latestVersion: release.version,
+    releaseName: release.name || release.tagName,
+    status: compareVersions(release.version, currentVersion) > 0 ? 'available' : 'not-available',
+  };
+  if (release.htmlUrl) result.releaseNotesUrl = release.htmlUrl;
+  if (release.publishedAt) result.publishedAt = release.publishedAt;
+
+  if (asset) {
+    result.assetName = asset.name;
+    result.downloadUrl = asset.browserDownloadUrl;
+  } else if (result.status === 'available') {
+    result.status = 'not-configured';
+    result.errorMessage = `最新版本没有匹配当前平台的安装包：${platform}`;
+  }
+
+  return result;
+}
+
+async function openUpdateDownload(downloadUrl: string): Promise<void> {
+  if (!isAllowedReleaseUrl(downloadUrl)) {
+    throw new Error('地址不属于当前项目的 GitHub Releases。');
+  }
+  await shell.openExternal(downloadUrl);
+}
+
+function updatePlatformKey(): AppUpdatePlatformKey {
+  if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64';
+  if (process.platform === 'darwin' && process.arch === 'x64') return 'darwin-x64';
+  if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64';
+  return 'unsupported';
+}
+
+interface GitHubReleaseAsset {
+  name: string;
+  browserDownloadUrl: string;
+}
+
+interface GitHubReleaseInfo {
+  tagName: string;
+  name: string;
+  version: string;
+  htmlUrl?: string;
+  publishedAt?: string;
+  assets: GitHubReleaseAsset[];
+}
+
+function normalizeGitHubRelease(value: unknown): GitHubReleaseInfo | null {
+  if (!isRecord(value)) return null;
+  const tagName = stringValue(value.tag_name);
+  const name = stringValue(value.name);
+  const version = normalizeReleaseVersion(tagName || name);
+  const assets = Array.isArray(value.assets)
+    ? value.assets
+      .filter(isRecord)
+      .map((asset) => ({
+        name: stringValue(asset.name),
+        browserDownloadUrl: stringValue(asset.browser_download_url),
+      }))
+      .filter((asset) => asset.name && asset.browserDownloadUrl)
+    : [];
+
+  const release: GitHubReleaseInfo = {
+    tagName,
+    name,
+    version,
+    assets,
+  };
+  const htmlUrl = stringValue(value.html_url);
+  const publishedAt = stringValue(value.published_at);
+  if (htmlUrl) release.htmlUrl = htmlUrl;
+  if (publishedAt) release.publishedAt = publishedAt;
+  return release;
+}
+
+async function githubErrorMessage(response: Response): Promise<string> {
+  const fallback = `检查更新失败：GitHub 返回 ${response.status}`;
+  try {
+    const payload = await response.json() as unknown;
+    if (!isRecord(payload)) return fallback;
+    const message = stringValue(payload.message);
+    return message ? `${fallback}：${message}` : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function releaseTagFromUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    const match = parsed.pathname.match(/\/releases\/tag\/([^/?#]+)/);
+    return match?.[1] ? decodeURIComponent(match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+function releaseTagFromHtml(html: string): string {
+  const match = html.match(/\/lzwei60\/codex-key-switcher\/releases\/tag\/([^"?#]+)/);
+  return match?.[1] ? decodeHtmlText(decodeURIComponent(match[1])) : '';
+}
+
+function releaseAssetsFromHtml(html: string): GitHubReleaseAsset[] {
+  const assets = new Map<string, GitHubReleaseAsset>();
+  const linkPattern = /href="([^"]*\/lzwei60\/codex-key-switcher\/releases\/download\/[^"]+)"/g;
+  for (const match of html.matchAll(linkPattern)) {
+    const href = decodeHtmlText(match[1] ?? '');
+    const url = absoluteGitHubUrl(href);
+    if (!url) continue;
+    const name = releaseAssetNameFromUrl(url);
+    if (name) assets.set(url, { name, browserDownloadUrl: url });
+  }
+  return [...assets.values()];
+}
+
+function absoluteGitHubUrl(href: string): string {
+  try {
+    return new URL(href, releaseBaseUrl).toString();
+  } catch {
+    return '';
+  }
+}
+
+function releaseAssetNameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/');
+    return decodeURIComponent(parts.at(-1) ?? '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function decodeHtmlText(value: string): string {
+  return value
+    .replaceAll('&amp;', '&')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function selectUpdateAsset(assets: GitHubReleaseAsset[], platform: AppUpdatePlatformKey): GitHubReleaseAsset | null {
+  if (platform === 'unsupported') return null;
+  const candidates = assets.filter((asset) => {
+    const name = asset.name.toLowerCase();
+    if (platform === 'darwin-arm64') return name.endsWith('.dmg') && (name.includes('arm64') || name.includes('aarch64'));
+    if (platform === 'darwin-x64') return name.endsWith('.dmg') && (name.includes('x64') || name.includes('intel') || name.includes('x86_64'));
+    if (platform === 'win32-x64') return name.endsWith('.exe') && (name.includes('x64') || name.includes('x86_64'));
+    return false;
+  });
+
+  return candidates[0] ?? null;
+}
+
+function compareVersions(left: string, right: string): number {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const diff = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function versionParts(version: string): number[] {
+  return normalizeReleaseVersion(version)
+    .split('.')
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => Number.isFinite(part) ? part : 0);
+}
+
+function normalizeReleaseVersion(value: string): string {
+  return value.trim().replace(/^v/i, '').split(/[+-]/)[0] || '0.0.0';
+}
+
+function isAllowedReleaseUrl(downloadUrl: string): boolean {
+  try {
+    const parsed = new URL(downloadUrl);
+    return parsed.protocol === 'https:'
+      && parsed.hostname === 'github.com'
+      && (
+        parsed.pathname === '/lzwei60/codex-key-switcher/releases'
+        || parsed.pathname.startsWith('/lzwei60/codex-key-switcher/releases/')
+      );
+  } catch {
+    return false;
+  }
+}
+
 async function getAppPreferences(): Promise<AppPreferences> {
   const settings = getAppSettingsStore();
   return {
@@ -586,6 +993,36 @@ async function saveAppPreferences(input: AppPreferences): Promise<AppPreferences
   await settings.setString('appLanguage', preferences.language);
   await settings.setString('appTheme', preferences.theme);
   return preferences;
+}
+
+async function getUsageSettings(): Promise<UsageSettings> {
+  const raw = await getAppSettingsStore().getString('usageSettings');
+  if (!raw) return { ...defaultUsageSettings };
+  try {
+    return normalizeUsageSettings(JSON.parse(raw));
+  } catch {
+    return { ...defaultUsageSettings };
+  }
+}
+
+async function saveUsageSettings(input: UsageSettings): Promise<UsageSettings> {
+  const settings = normalizeUsageSettings(input);
+  await getAppSettingsStore().setString('usageSettings', JSON.stringify(settings));
+  return settings;
+}
+
+function normalizeUsageSettings(value: unknown): UsageSettings {
+  const settings = value && typeof value === 'object' ? value as Partial<UsageSettings> : {};
+  return {
+    enabled: typeof settings.enabled === 'boolean' ? settings.enabled : defaultUsageSettings.enabled,
+    retentionDays: normalizeUsageSettingInteger(settings.retentionDays, 1, 365, defaultUsageSettings.retentionDays),
+    maxRecords: normalizeUsageSettingInteger(settings.maxRecords, 100, 100_000, defaultUsageSettings.maxRecords),
+  };
+}
+
+function normalizeUsageSettingInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeAppLanguage(value: string | null | undefined): AppPreferences['language'] {
@@ -686,6 +1123,7 @@ app.whenReady().then(async () => {
   getProviderService();
   getCodexConfigService();
   getUsageService();
+  await getUsageService().configure(await getUsageSettings());
   getLocalGatewayRuntime();
   registerIpcHandlers();
   const routeSettings = await getRouteSettings();
@@ -719,6 +1157,9 @@ async function quitApplication(): Promise<void> {
   quitFlowStarted = true;
 
   const result = await stopGatewayForQuit();
+  await getUsageService().flush().catch((error) => {
+    console.error('Failed to flush usage records before quit:', error);
+  });
   await showQuitRestoreMessage(result);
 
   isQuitting = true;
@@ -793,11 +1234,15 @@ async function getRouteSettings(): Promise<RouteSettings> {
   };
 }
 
-async function saveRouteSettings(input: RouteSettings): Promise<RouteSettings> {
+async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSaveResult> {
   const previousSettings = await getRouteSettings();
   const normalized = normalizeRouteSettings(input);
   if (!await confirmConnectionModeSwitch(previousSettings.mode, normalized.mode)) {
-    return previousSettings;
+    return {
+      settings: previousSettings,
+      changed: false,
+      cancelled: true,
+    };
   }
 
   if (!normalized.enabled) {
@@ -831,7 +1276,11 @@ async function saveRouteSettings(input: RouteSettings): Promise<RouteSettings> {
     await persistRouteSettings(normalized);
   }
 
-  return normalized;
+  return {
+    settings: normalized,
+    changed: !routeSettingsEqual(previousSettings, normalized),
+    cancelled: false,
+  };
 }
 
 async function persistRouteSettings(settingsValue: RouteSettings): Promise<void> {
@@ -866,6 +1315,19 @@ function normalizeConnectionMode(mode: string | null | undefined): ConnectionMod
   return mode === 'direct_provider' ? 'direct_provider' : 'local_gateway';
 }
 
+async function assertProviderSaveSupportsCurrentMode(input: ProviderInput, providers: Provider[]): Promise<void> {
+  const routeSettings = await getRouteSettings();
+  if (!routeSettings.enabled || routeSettings.mode !== 'direct_provider' || input.apiFormat === 'responses') return;
+
+  const currentProvider = await getProviderService().current();
+  const inputId = input.id?.trim();
+  const editsCurrentProvider = Boolean(inputId && currentProvider?.id === inputId);
+  const becomesFirstCurrentProvider = !providers.length && !inputId;
+  if (!editsCurrentProvider && !becomesFirstCurrentProvider) return;
+
+  throw new Error('直连供应商模式仅支持 Responses 格式供应商；当前配置请先切换到本地路由模式，或保持 Responses 格式。');
+}
+
 async function assertCurrentProviderSupportsDirectMode(): Promise<void> {
   const currentProvider = await getProviderService().current();
   if (!currentProvider) throw new Error('请先添加并选择一个供应商，再启用直连供应商模式。');
@@ -882,6 +1344,17 @@ async function assertProviderSupportsDirectMode(provider: Provider): Promise<voi
 
 function safeRoutePort(port: number): number {
   return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : defaultRouteSettings().listenPort;
+}
+
+function routeSettingsEqual(left: RouteSettings, right: RouteSettings): boolean {
+  return left.mode === right.mode
+    && left.enabled === right.enabled
+    && left.autoStart === right.autoStart
+    && left.disabledExplicitly === right.disabledExplicitly
+    && left.listenAddress === right.listenAddress
+    && left.listenPort === right.listenPort
+    && left.allowLANListen === right.allowLANListen
+    && left.failoverEnabled === right.failoverEnabled;
 }
 
 async function checkRoutePort(input: Pick<RouteSettings, 'listenAddress' | 'listenPort' | 'allowLANListen'>): Promise<PortCheckResult> {
@@ -995,11 +1468,11 @@ async function startGateway(): Promise<GatewayStatus> {
   if (requestedSettings.mode === 'direct_provider') {
     const enabledSettings = requestedSettings.enabled
       ? requestedSettings
-      : await saveRouteSettings({
+      : (await saveRouteSettings({
           ...requestedSettings,
           enabled: true,
           disabledExplicitly: false,
-        });
+        })).settings;
     await getLocalGatewayRuntime().stop().catch(() => undefined);
     await syncCodexDirectProviderConfig();
     gatewayStatusCache = await currentConnectionStatus(enabledSettings);
@@ -1050,6 +1523,7 @@ async function stopGateway(options: { strictRestore?: boolean; restoreManagedBac
     disabledExplicitly: true,
   };
   await persistRouteSettings(stoppedSettings);
+  if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
   gatewayStatusCache = await currentConnectionStatus(stoppedSettings);
   createTray();
   return gatewayStatusCache;
@@ -1136,6 +1610,7 @@ async function syncCodexDirectProviderConfig(): Promise<void> {
     apiKey,
     model: upstreamModel,
   });
+  await saveDirectSessionTarget(directSessionTargetForProvider(currentProvider));
 }
 
 async function syncCodexLocalGatewayConfig(status: GatewayStatus): Promise<void> {
@@ -1155,15 +1630,23 @@ async function syncCodexLocalGatewayConfig(status: GatewayStatus): Promise<void>
 async function currentConnectionStatus(routeSettings: RouteSettings): Promise<GatewayStatus> {
   const provider = await getProviderService().current();
   if (routeSettings.mode === 'direct_provider') {
-    return {
+    const directSessionTarget = await getDirectSessionTarget();
+    const status: GatewayStatus = {
       running: false,
       mode: routeSettings.mode,
-      endpoint: provider?.baseURL ?? '未选择供应商',
-      ...(provider ? {
-        currentProviderName: provider.name,
-        currentModel: providerSelectedDisplayModel(provider),
-      } : {}),
+      endpoint: directSessionTarget?.baseURL ?? provider?.baseURL ?? '未选择供应商',
     };
+    if (directSessionTarget) {
+      status.currentProviderId = directSessionTarget.providerId;
+      status.currentProviderName = directSessionTarget.providerName;
+      status.currentModel = directSessionTarget.displayModel;
+      status.directSessionTarget = directSessionTarget;
+    } else if (provider) {
+      status.currentProviderId = provider.id;
+      status.currentProviderName = provider.name;
+      status.currentModel = providerSelectedDisplayModel(provider);
+    }
+    return status;
   }
 
   const status = await getLocalGatewayRuntime().status();
@@ -1171,6 +1654,44 @@ async function currentConnectionStatus(routeSettings: RouteSettings): Promise<Ga
     ...status,
     mode: routeSettings.mode,
   };
+}
+
+async function getDirectSessionTarget(): Promise<DirectSessionTarget | null> {
+  const raw = await getAppSettingsStore().getString(directSessionTargetKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<DirectSessionTarget>;
+    if (
+      typeof parsed.id !== 'string'
+      || typeof parsed.providerId !== 'string'
+      || typeof parsed.providerName !== 'string'
+      || typeof parsed.baseURL !== 'string'
+      || typeof parsed.modelName !== 'string'
+      || typeof parsed.displayModel !== 'string'
+      || typeof parsed.appliedAt !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      id: parsed.id,
+      providerId: parsed.providerId,
+      providerName: parsed.providerName,
+      baseURL: parsed.baseURL,
+      modelName: parsed.modelName,
+      displayModel: parsed.displayModel,
+      appliedAt: parsed.appliedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveDirectSessionTarget(target: DirectSessionTarget): Promise<void> {
+  await getAppSettingsStore().setString(directSessionTargetKey, JSON.stringify(target));
+}
+
+async function clearDirectSessionTarget(): Promise<void> {
+  await getAppSettingsStore().setString(directSessionTargetKey, '');
 }
 
 function endpointForRouteSettings(settings: RouteSettings): string {

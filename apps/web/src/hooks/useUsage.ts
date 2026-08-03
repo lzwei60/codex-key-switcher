@@ -11,7 +11,7 @@ export function useUsage() {
   const [logPage, setLogPage] = useState(1);
   const [logPageSize, setLogPageSize] = useState(10);
 
-  const refresh = useCallback(async (nextPage = logPage, nextPageSize = logPageSize) => {
+  const loadStats = useCallback(async (nextPage: number, nextPageSize: number) => {
     setLoading(true);
     try {
       const snapshot = await getDesktopApi().usage.stats({
@@ -26,11 +26,15 @@ export function useUsage() {
     } finally {
       setLoading(false);
     }
-  }, [logPage, logPageSize]);
+  }, []);
+
+  const refresh = useCallback(async () => {
+    await loadStats(logPage, logPageSize);
+  }, [loadStats, logPage, logPageSize]);
 
   const changeLogPage = useCallback(async (page: number, pageSize: number) => {
-    await refresh(page, pageSize);
-  }, [refresh]);
+    await loadStats(page, pageSize);
+  }, [loadStats]);
 
   const clearLogs = useCallback(async () => {
     setLoading(true);
@@ -48,8 +52,8 @@ export function useUsage() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void loadStats(1, 10);
+  }, [loadStats]);
 
   return { stats, loading, refresh, changeLogPage, clearLogs };
 }

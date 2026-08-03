@@ -1,9 +1,9 @@
 'use client';
 
-import { FolderOpenOutlined } from '@ant-design/icons';
-import { useEffect, useState } from 'react';
-import { Alert, App, Button, Card, Form, Input, InputNumber, Segmented, Space, Switch, Tabs, Typography } from 'antd';
-import type { AppPreferences, AppStartupSettings, CodexConfigDirectorySettings, ConnectionMode, RouteSettings as RouteSettingsValue } from '@codex-key-switcher/shared';
+import { CloudDownloadOutlined, FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, App, Button, Card, Descriptions, Form, Input, InputNumber, Segmented, Space, Switch, Tabs, Tag, Typography } from 'antd';
+import type { AppPreferences, AppStartupSettings, AppUpdateInfo, CodexConfigDirectorySettings, ConnectionMode, RouteSettings as RouteSettingsValue, UsageSettings as UsageSettingsValue } from '@codex-key-switcher/shared';
 import { PageHeader } from '../layout/AppShell';
 import type { SettingsTabKey } from '../../types/navigation';
 import { useAppPreferences } from '../../lib/app-preferences';
@@ -34,10 +34,231 @@ export function SettingsPage({
         items={[
           { key: 'general', label: text('通用', 'General'), children: <GeneralSettings /> },
           { key: 'route', label: text('路由', 'Gateway'), children: <RouteSettings /> },
+          { key: 'usage', label: text('统计与隐私', 'Usage & Privacy'), children: <UsageSettings /> },
+          { key: 'updates', label: text('更新', 'Updates'), children: <UpdateSettings /> },
         ]}
         onChange={(key) => onTabChange(key as SettingsTabKey)}
       />
     </>
+  );
+}
+
+function UsageSettings() {
+  const [form] = Form.useForm<UsageSettingsValue>();
+  const { message } = App.useApp();
+  const { text } = useAppPreferences();
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const enabled = Form.useWatch('enabled', form) ?? true;
+
+  useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    getDesktopApi().usage.settings()
+      .then((settings) => {
+        if (mounted) form.setFieldsValue(settings);
+      })
+      .catch((error) => {
+        if (mounted) message.error(error instanceof Error ? error.message : text('读取统计设置失败', 'Failed to read usage settings'));
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [form, message, text]);
+
+  async function saveSettings(values: UsageSettingsValue) {
+    setSaving(true);
+    try {
+      const settings = await getDesktopApi().usage.saveSettings(values);
+      form.setFieldsValue(settings);
+      message.success(text('统计与隐私设置已保存', 'Usage and privacy settings saved'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : text('保存失败', 'Save failed'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <Alert
+        className="section-alert"
+        showIcon
+        title={text(
+          '统计仅用于本地排障与用量感知，不会记录请求正文、响应正文或 API Key。',
+          'Usage data is only for local diagnostics and awareness. Request bodies, response bodies, and API keys are never recorded.',
+        )}
+        type="info"
+      />
+      <Form
+        form={form}
+        initialValues={{ enabled: true, retentionDays: 30, maxRecords: 10_000 }}
+        layout="vertical"
+        onFinish={(values) => void saveSettings(values as UsageSettingsValue)}
+      >
+        <Form.Item
+          extra={text('关闭后不会写入新的本地用量记录，已有记录可在用量统计页手动清除。', 'When disabled, new local usage records are not written. Existing records can be cleared from the Usage page.')}
+          label={text('记录本地用量', 'Record Local Usage')}
+          name="enabled"
+          valuePropName="checked"
+        >
+          <Switch loading={loading} />
+        </Form.Item>
+        <Space className="route-row" size={16} wrap>
+          <Form.Item
+            label={text('保留天数', 'Retention Days')}
+            name="retentionDays"
+            rules={[{ required: true, message: text('请输入保留天数', 'Enter retention days') }]}
+          >
+            <InputNumber disabled={loading || !enabled} max={365} min={1} suffix={text('天', 'days')} />
+          </Form.Item>
+          <Form.Item
+            label={text('最大记录数', 'Maximum Records')}
+            name="maxRecords"
+            rules={[{ required: true, message: text('请输入最大记录数', 'Enter maximum records') }]}
+          >
+            <InputNumber disabled={loading || !enabled} max={100_000} min={100} step={100} />
+          </Form.Item>
+        </Space>
+        <Text type="secondary">
+          {text('超过任一上限时，应用会自动删除最早的本地记录。', 'When either limit is exceeded, the oldest local records are removed automatically.')}
+        </Text>
+        <Space className="settings-actions">
+          <Button htmlType="submit" loading={saving} type="primary">
+            {text('保存统计设置', 'Save Usage Settings')}
+          </Button>
+        </Space>
+      </Form>
+    </Card>
+  );
+}
+
+function UpdateSettings() {
+  const { message } = App.useApp();
+  const { text } = useAppPreferences();
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [openingDownload, setOpeningDownload] = useState(false);
+  const [openingReleaseNotes, setOpeningReleaseNotes] = useState(false);
+
+  const checkUpdates = useCallback(async () => {
+    setChecking(true);
+    try {
+      const result = await getDesktopApi().app.checkForUpdates();
+      setUpdateInfo(result);
+      if (result.status === 'available') {
+        message.success(text('发现新版本', 'Update available'));
+      } else if (result.status === 'not-available') {
+        message.success(text('当前已是最新版本', 'You are up to date'));
+      } else if (result.errorMessage) {
+        message.warning(result.errorMessage);
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : text('检查更新失败', 'Failed to check for updates'));
+    } finally {
+      setChecking(false);
+    }
+  }, [message, text]);
+
+  useEffect(() => {
+    void checkUpdates();
+  }, [checkUpdates]);
+
+  async function openReleaseUrl(url: string, setOpening: (value: boolean) => void) {
+    setOpening(true);
+    try {
+      await getDesktopApi().app.openUpdateDownload(url);
+      message.success(text('已打开链接', 'Link opened'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : text('打开链接失败', 'Failed to open link'));
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  async function openDownload() {
+    if (!updateInfo?.downloadUrl) return;
+    setOpeningDownload(true);
+    try {
+      await getDesktopApi().app.openUpdateDownload(updateInfo.downloadUrl);
+      message.success(text('已打开下载链接', 'Download link opened'));
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : text('打开下载链接失败', 'Failed to open download link'));
+    } finally {
+      setOpeningDownload(false);
+    }
+  }
+
+  const status = updateInfo?.status ?? 'not-configured';
+  const statusTag = updateStatusTag(status, text);
+  const platformLabel = updatePlatformLabel(updateInfo?.platform, text);
+
+  return (
+    <Card>
+      <Descriptions
+        bordered
+        column={1}
+        items={[
+          {
+            key: 'status',
+            label: text('更新状态', 'Update Status'),
+            children: statusTag,
+          },
+          {
+            key: 'currentVersion',
+            label: text('当前版本', 'Current Version'),
+            children: updateInfo?.currentVersion ?? '-',
+          },
+          {
+            key: 'latestVersion',
+            label: text('最新版本', 'Latest Version'),
+            children: updateInfo?.latestVersion ?? '-',
+          },
+          {
+            key: 'platform',
+            label: text('当前平台', 'Current Platform'),
+            children: platformLabel,
+          },
+          {
+            key: 'assetName',
+            label: text('匹配安装包', 'Matched Installer'),
+            children: updateInfo?.assetName ?? text('暂无', 'None'),
+          },
+          {
+            key: 'publishedAt',
+            label: text('发布时间', 'Published At'),
+            children: updateInfo?.publishedAt ? new Date(updateInfo.publishedAt).toLocaleString() : '-',
+          },
+          {
+            key: 'message',
+            label: text('说明', 'Message'),
+            children: updateInfo?.errorMessage ?? text('通过 GitHub Releases 获取最新版本。', 'Latest version is checked from GitHub Releases.'),
+          },
+        ]}
+      />
+      <Space className="settings-actions" wrap>
+        <Button icon={<ReloadOutlined />} loading={checking} onClick={() => void checkUpdates()}>
+          {text('检查更新', 'Check for Updates')}
+        </Button>
+        <Button
+          disabled={!updateInfo?.downloadUrl}
+          icon={<CloudDownloadOutlined />}
+          loading={openingDownload}
+          onClick={() => void openDownload()}
+          type={updateInfo?.status === 'available' ? 'primary' : 'default'}
+        >
+          {text('下载当前平台安装包', 'Download Installer')}
+        </Button>
+        {updateInfo?.releaseNotesUrl ? (
+          <Button loading={openingReleaseNotes} onClick={() => void openReleaseUrl(updateInfo.releaseNotesUrl ?? '', setOpeningReleaseNotes)}>
+            {text('查看发布说明', 'Release Notes')}
+          </Button>
+        ) : null}
+      </Space>
+    </Card>
   );
 }
 
@@ -234,9 +455,18 @@ function RouteSettings() {
   async function saveSettings(values: RouteSettingsValue) {
     setSaving(true);
     try {
-      const settings = await getDesktopApi().gateway.saveSettings({ ...values, mode });
+      const result = await getDesktopApi().gateway.saveSettings({ ...values, mode });
+      const { settings } = result;
       form.setFieldsValue(settings);
       setMode(settings.mode);
+      if (result.cancelled) {
+        message.info(text('已取消连接模式切换，配置未更改。', 'Connection mode change was cancelled. Settings were not changed.'));
+        return;
+      }
+      if (!result.changed) {
+        message.info(text('连接设置未变化。', 'Connection settings were not changed.'));
+        return;
+      }
       const modeName = settings.mode === 'direct_provider'
         ? text('直连供应商', 'Direct Provider')
         : text('本地路由', 'Local Gateway');
@@ -276,7 +506,7 @@ function RouteSettings() {
         className="section-alert"
         showIcon
         title={mode === 'direct_provider'
-          ? text('直连供应商模式不会启动本地监听，也不会记录本地请求日志和 Token 统计；第一版仅支持 Responses 格式供应商。', 'Direct provider mode does not start a local listener and cannot record request logs or token stats. The first version only supports Responses providers.')
+          ? text('直连供应商模式不会启动本地监听，也不会记录本地请求日志和 Token 统计；仅支持 Responses 格式供应商。', 'Direct provider mode does not start a local listener and cannot record request logs or token stats. The first version only supports Responses providers.')
           : text('故障转移只会在上游 5xx、超时或网络错误时尝试下一个供应商；4xx 配置错误会直接返回。', 'Failover only tries the next provider for upstream 5xx, timeout, or network errors. 4xx configuration errors return directly.')}
         type="info"
       />
@@ -340,4 +570,19 @@ function RouteSettings() {
       </Form>
     </Card>
   );
+}
+
+function updateStatusTag(status: AppUpdateInfo['status'], text: (zh: string, en: string) => string) {
+  if (status === 'available') return <Tag color="green">{text('可更新', 'Available')}</Tag>;
+  if (status === 'not-available') return <Tag color="blue">{text('已是最新', 'Up to date')}</Tag>;
+  if (status === 'unsupported-platform') return <Tag color="orange">{text('平台暂不支持', 'Unsupported')}</Tag>;
+  if (status === 'error') return <Tag color="red">{text('检查失败', 'Error')}</Tag>;
+  return <Tag>{text('未配置发布', 'Not configured')}</Tag>;
+}
+
+function updatePlatformLabel(platform: AppUpdateInfo['platform'] | undefined, text: (zh: string, en: string) => string): string {
+  if (platform === 'darwin-arm64') return text('Mac M 芯片', 'Mac Apple Silicon');
+  if (platform === 'darwin-x64') return text('Mac Intel', 'Mac Intel');
+  if (platform === 'win32-x64') return text('Windows x64', 'Windows x64');
+  return text('暂不支持', 'Unsupported');
 }

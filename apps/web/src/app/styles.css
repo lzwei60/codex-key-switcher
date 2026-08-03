@@ -219,6 +219,10 @@ html[data-theme="dark"] body {
   display: flex;
 }
 
+.settings-actions {
+  margin-top: 16px;
+}
+
 .about-copy {
   margin: 18px 0 0;
 }
@@ -422,11 +426,6 @@ html[data-theme="dark"] body {
   overflow: auto;
   white-space: normal;
   word-break: break-word;
-}
-
-.provider-model-select {
-  max-width: 100%;
-  min-width: 180px;
 }
 
 .provider-card-actions {

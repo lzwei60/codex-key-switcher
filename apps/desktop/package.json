@@ -1,6 +1,6 @@
 {
   "name": "@codex-key-switcher/desktop",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Cross-platform Codex local gateway provider switcher.",
   "author": "Codex Key Switcher",
   "private": true,
@@ -35,6 +35,7 @@
   "build": {
     "appId": "com.codexkeyswitcher.app",
     "productName": "Codex Key Switcher",
+    "afterPack": "../../scripts/adhoc-sign-mac.mjs",
     "compression": "maximum",
     "electronLanguages": [
       "zh-CN",
@@ -46,7 +47,8 @@
     "files": [
       "dist/**/*",
       "build/icon.png",
-      "package.json"
+      "package.json",
+      "!node_modules/sql.js/**"
     ],
     "extraResources": [
       {
@@ -68,10 +70,11 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.icns",
+      "identity": null,
       "target": [
         "dmg"
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "Codex-Key-Switcher-${version}-${arch}.${ext}"
     },
     "win": {
       "icon": "build/icon.ico",
@@ -83,7 +86,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "Codex-Key-Switcher-Setup-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

@@ -111,6 +111,23 @@ export interface CodexConfigDirectorySettings {
   isDefault: boolean;
 }
 
+export type AppUpdatePlatformKey = 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'unsupported';
+
+export type AppUpdateStatus = 'available' | 'not-available' | 'not-configured' | 'unsupported-platform' | 'error';
+
+export interface AppUpdateInfo {
+  currentVersion: string;
+  platform: AppUpdatePlatformKey;
+  status: AppUpdateStatus;
+  latestVersion?: string;
+  releaseName?: string;
+  releaseNotesUrl?: string;
+  publishedAt?: string;
+  downloadUrl?: string;
+  assetName?: string;
+  errorMessage?: string;
+}
+
 export interface PortCheckResult {
   available: boolean;
   listenAddress: string;
@@ -122,8 +139,20 @@ export interface GatewayStatus {
   running: boolean;
   endpoint: string;
   mode?: ConnectionMode;
+  currentProviderId?: string;
   currentProviderName?: string;
   currentModel?: string;
+  directSessionTarget?: DirectSessionTarget;
+}
+
+export interface DirectSessionTarget {
+  id: string;
+  providerId: string;
+  providerName: string;
+  baseURL: string;
+  modelName: string;
+  displayModel: string;
+  appliedAt: number;
 }
 
 export interface UsageRecord {
@@ -182,6 +211,22 @@ export interface UsageStatsInput {
   logPageSize: number;
 }
 
+/**
+ * Local-only observability controls. Request and response bodies are never
+ * included in usage records.
+ */
+export interface UsageSettings {
+  enabled: boolean;
+  retentionDays: number;
+  maxRecords: number;
+}
+
+export const defaultUsageSettings: UsageSettings = {
+  enabled: true,
+  retentionDays: 30,
+  maxRecords: 10_000,
+};
+
 export interface UsageStatsSnapshot {
   summary: UsageSummary;
   trendRows: UsageTrendRow[];
@@ -191,6 +236,7 @@ export interface UsageStatsSnapshot {
 }
 
 export interface DiagnosticsReport {
+  appVersion: string;
   connectionMode: ConnectionMode;
   routeEnabled: boolean;
   codexUsesGateway: boolean;
@@ -198,11 +244,19 @@ export interface DiagnosticsReport {
   codexDirectory: string;
   endpoint: string;
   issues: string[];
+  currentProviderId?: string;
   currentProviderName?: string;
   currentModel?: string;
   restoreAvailable: boolean;
   restoreScriptPath: string;
   healthStatus: string;
+  directSessionTarget?: DirectSessionTarget;
+}
+
+export interface RouteSettingsSaveResult {
+  settings: RouteSettings;
+  changed: boolean;
+  cancelled: boolean;
 }
 
 export interface DesktopApi {
@@ -214,6 +268,8 @@ export interface DesktopApi {
     codexConfigDirectory(): Promise<CodexConfigDirectorySettings>;
     saveCodexConfigDirectory(directory: string): Promise<CodexConfigDirectorySettings>;
     chooseCodexConfigDirectory(): Promise<CodexConfigDirectorySettings | null>;
+    checkForUpdates(): Promise<AppUpdateInfo>;
+    openUpdateDownload(downloadUrl: string): Promise<void>;
   };
   providers: {
     list(): Promise<Provider[]>;
@@ -231,7 +287,7 @@ export interface DesktopApi {
     start(): Promise<GatewayStatus>;
     stop(): Promise<GatewayStatus>;
     settings(): Promise<RouteSettings>;
-    saveSettings(input: RouteSettings): Promise<RouteSettings>;
+    saveSettings(input: RouteSettings): Promise<RouteSettingsSaveResult>;
     checkPort(input: Pick<RouteSettings, 'listenAddress' | 'listenPort' | 'allowLANListen'>): Promise<PortCheckResult>;
   };
   diagnostics: {
@@ -243,8 +299,9 @@ export interface DesktopApi {
     copyReport(): Promise<void>;
   };
   usage: {
-    snapshot(): Promise<UsageRecord[]>;
     stats(input: UsageStatsInput): Promise<UsageStatsSnapshot>;
     clearLogs(): Promise<UsageStatsSnapshot>;
+    settings(): Promise<UsageSettings>;
+    saveSettings(input: UsageSettings): Promise<UsageSettings>;
   };
 }

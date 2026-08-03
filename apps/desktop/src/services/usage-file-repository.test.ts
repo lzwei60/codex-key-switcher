@@ -28,11 +28,29 @@ describe('UsageFileRepository', () => {
     const records = await repository.snapshot();
     expect(records).toHaveLength(1_025);
     expect(new Set(records.map((record) => record.id)).size).toBe(1_025);
+    await repository.flush();
     await expect(pathExists(path.join(root, 'usage.sqlite'))).resolves.toBe(true);
+  });
+
+  it('limits retained history and can stop recording new usage', async () => {
+    const root = await temporaryRoot();
+    const repository = new UsageFileRepository(root);
+    await repository.configure({ enabled: true, retentionDays: 30, maxRecords: 100 });
+    const createdAt = Date.now();
+
+    await Promise.all(Array.from({ length: 101 }, (_, index) => repository.record(usageRecord(`record-${index}`, createdAt + index))));
+
+    expect((await repository.snapshot()).map((record) => record.id)).toHaveLength(100);
+    expect((await repository.snapshot()).some((record) => record.id === 'record-0')).toBe(false);
+
+    await repository.configure({ enabled: false, retentionDays: 30, maxRecords: 100 });
+    await repository.record(usageRecord('ignored', createdAt + 101));
+    expect(await repository.snapshot()).toHaveLength(100);
   });
 
   it('migrates legacy usage-records.json into SQLite once', async () => {
     const root = await temporaryRoot();
+    const createdAt = Date.now() - 1_000;
     await fs.writeFile(path.join(root, 'usage-records.json'), JSON.stringify([
       {
         id: 'legacy-1',
@@ -43,7 +61,7 @@ describe('UsageFileRepository', () => {
         source: 'responses',
         inputTokens: 10,
         outputTokens: 20,
-        createdAt: 1000,
+        createdAt,
       },
     ]), 'utf8');
 
@@ -63,8 +81,9 @@ describe('UsageFileRepository', () => {
       status: 200,
       durationMs: 1,
       source: 'responses',
-      createdAt: 2000,
+      createdAt: createdAt + 1,
     });
+    await reopened.flush();
     expect(await reopened.snapshot()).toHaveLength(2);
   });
 
@@ -107,6 +126,7 @@ describe('UsageFileRepository', () => {
       outputTokens: 8,
       createdAt: baseTime + 2000,
     });
+    await repository.flush();
 
     const stats = await repository.stats({ logPage: 2, logPageSize: 2 });
 
@@ -164,6 +184,18 @@ async function temporaryRoot(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cksw-usage-test-'));
   temporaryRoots.push(root);
   return root;
+}
+
+function usageRecord(id: string, createdAt: number) {
+  return {
+    id,
+    provider: 'provider',
+    model: 'model',
+    status: 200,
+    durationMs: 1,
+    source: 'responses' as const,
+    createdAt,
+  };
 }
 
 async function pathExists(filePath: string): Promise<boolean> {

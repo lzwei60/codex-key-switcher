@@ -40,6 +40,15 @@ Maintainer approval is required for:
 - Build, signing, notarization, release, and installer changes.
 - Dependency upgrades that affect runtime behavior or packaging.
 
+## Stable Release Policy
+
+- `v1.0.0` is the first stable release line.
+- Stable tags must be immutable after publication. If an installer must be replaced, publish a new patch version such as `v1.0.1`.
+- Release notes must include supported platforms, installer names, unsigned/notarization status, upgrade notes, and known limitations.
+- The latest GitHub Release must use a tag that matches the desktop app version.
+- At minimum, each release candidate must pass `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `pnpm build`.
+- Platform installers should be built and verified on matching environments before they are listed as available release assets.
+
 ## Repository Setup Checklist
 
 Before making the repository public:

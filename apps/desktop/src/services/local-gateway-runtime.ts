@@ -1,7 +1,6 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
-  providerCatalogSlug,
   providerSelectedCatalogModel,
   providerSelectedDisplayModel,
   type CodexConfigService,
@@ -11,9 +10,11 @@ import {
 import type { GatewayStatus, Provider, RouteSettings } from '@codex-key-switcher/shared';
 import {
   adaptUpstreamResponseToResponses,
+  type ParsedUsage,
   requestedModelFromBody,
   requestBodyWantsStream,
   ResponsesSSEAdapter,
+  StreamingUsageParser,
   upstreamBaseURLForProvider,
   upstreamPathForGatewayPath,
   upstreamRequestBodyFromResponsesBody,
@@ -30,10 +31,16 @@ interface ForwardAttempt {
   durationMs: number;
   retryable: boolean;
   streamed: boolean;
-  usageData: Buffer;
+  usage: ParsedUsage;
   body?: Buffer;
   contentType?: string;
   errorPayload?: Record<string, unknown>;
+}
+
+interface GatewayRequestContext {
+  authorized: boolean;
+  provider: Provider | null;
+  providerApiKey: string | null;
 }
 
 export class LocalGatewayRuntime {
@@ -95,6 +102,7 @@ export class LocalGatewayRuntime {
       endpoint: this.endpoint,
     };
     if (provider) {
+      status.currentProviderId = provider.id;
       status.currentProviderName = provider.name;
       status.currentModel = providerSelectedDisplayModel(provider);
     }
@@ -112,18 +120,19 @@ export class LocalGatewayRuntime {
 
       const url = new URL(request.url || '/', this.endpoint);
       if (url.pathname === '/__status' || url.pathname === '/v1/__status') {
-        const authorized = await this.isAuthorizedRequest(request, Buffer.alloc(0));
-        await this.writeStatus(response, authorized);
+        const context = await this.createRequestContext(request);
+        await this.writeStatus(response, context.authorized);
         return;
       }
 
       const body = await readRequestBody(request);
-      if (!await this.isAuthorizedRequest(request, body)) {
+      const context = await this.createRequestContext(request);
+      if (!context.authorized) {
         writeJson(response, 401, { error: 'Unauthorized local gateway request' });
         return;
       }
 
-      await this.forwardRequest(request, response, url, body);
+      await this.forwardRequest(request, response, url, body, context);
     } catch (error) {
       writeJson(response, 500, {
         error: error instanceof Error ? error.message : 'Local gateway request failed',
@@ -157,16 +166,20 @@ export class LocalGatewayRuntime {
     });
   }
 
-  private async isAuthorizedRequest(request: http.IncomingMessage, body: Buffer): Promise<boolean> {
+  private async createRequestContext(request: http.IncomingMessage): Promise<GatewayRequestContext> {
     const token = authorizationToken(request.headers.authorization);
-    if (!token) return false;
+    if (!token) return { authorized: false, provider: null, providerApiKey: null };
+
+    const current = await this.providerService.currentRoutingProviderWithApiKey();
+    const provider = current?.provider ?? null;
+    const providerApiKey = current?.apiKey ?? null;
 
     const localGatewayAPIKey = await this.codexConfig.localGatewayAPIKey();
-    if (token === localGatewayAPIKey) return true;
-
-    const provider = await this.providerForRequestBody(body);
-    const providerKey = provider ? await this.providerService.currentApiKey(provider) : null;
-    return Boolean(providerKey && providerKey === token);
+    return {
+      authorized: token === localGatewayAPIKey || Boolean(providerApiKey && providerApiKey === token),
+      provider,
+      providerApiKey,
+    };
   }
 
   private async forwardRequest(
@@ -174,8 +187,9 @@ export class LocalGatewayRuntime {
     response: http.ServerResponse,
     url: URL,
     body: Buffer,
+    context: GatewayRequestContext,
   ): Promise<void> {
-    const provider = await this.providerForRequestBody(body);
+    const provider = context.provider;
     if (!provider) {
       writeJson(response, 503, { error: 'No active provider' });
       return;
@@ -185,10 +199,13 @@ export class LocalGatewayRuntime {
     let lastAttempt: ForwardAttempt | null = null;
 
     for (const candidate of candidates) {
-      const attempt = await this.forwardWithProvider(request, response, url, body, candidate);
+      const candidateApiKey = candidate.id === provider.id
+        ? context.providerApiKey
+        : await this.providerService.currentApiKey(candidate);
+      const attempt = await this.forwardWithProvider(request, response, url, body, candidate, candidateApiKey);
       lastAttempt = attempt;
       if (attempt.streamed) {
-        void this.recordUsage(attempt.provider, attempt.upstreamModel, attempt.status, attempt.durationMs, attempt.usageData);
+        void this.recordUsage(attempt.provider, attempt.upstreamModel, attempt.status, attempt.durationMs, attempt.usage);
         return;
       }
       if (!attempt.retryable) break;
@@ -200,7 +217,7 @@ export class LocalGatewayRuntime {
     }
 
     if (lastAttempt.errorPayload) {
-      void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usageData);
+      void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usage);
       writeJson(response, lastAttempt.status, lastAttempt.errorPayload);
       return;
     }
@@ -218,7 +235,7 @@ export class LocalGatewayRuntime {
       ),
     });
     response.end(data);
-    void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usageData);
+    void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usage);
   }
 
   private async forwardWithProvider(
@@ -227,6 +244,7 @@ export class LocalGatewayRuntime {
     url: URL,
     body: Buffer,
     provider: Provider,
+    apiKey: string | null,
   ): Promise<ForwardAttempt> {
     const originalPath = normalizedGatewayPath(url.pathname);
     const method = request.method ?? 'GET';
@@ -244,7 +262,6 @@ export class LocalGatewayRuntime {
     const upstreamModel = upstreamBody?.upstreamModel ?? providerSelectedCatalogModel(provider);
     const startedAt = performance.now();
 
-    const apiKey = await this.providerService.currentApiKey(provider);
     if (!apiKey) {
       return {
         provider,
@@ -253,7 +270,7 @@ export class LocalGatewayRuntime {
         durationMs: Math.round(performance.now() - startedAt),
         retryable: true,
         streamed: false,
-        usageData: Buffer.alloc(0),
+        usage: {},
         errorPayload: {
           error: 'Provider API Key is unavailable',
           provider: provider.name,
@@ -275,7 +292,7 @@ export class LocalGatewayRuntime {
         durationMs: Math.round(performance.now() - startedAt),
         retryable: true,
         streamed: false,
-        usageData: Buffer.alloc(0),
+        usage: {},
         errorPayload: {
           error: 'Invalid provider baseURL',
           provider: provider.name,
@@ -300,7 +317,7 @@ export class LocalGatewayRuntime {
 
       const upstreamResponse = await fetch(upstreamURL, upstreamRequest);
       if (upstreamResponse.status >= 200 && upstreamResponse.status < 300 && upstreamBody?.clientWantsStream) {
-        const usageData = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt);
+        const usage = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt);
         const durationMs = Math.round(performance.now() - startedAt);
         return {
           provider,
@@ -309,11 +326,12 @@ export class LocalGatewayRuntime {
           durationMs,
           retryable: false,
           streamed: true,
-          usageData,
+          usage,
         };
       }
 
       const upstreamData = Buffer.from(await upstreamResponse.arrayBuffer());
+      const usage = usageFromResponseBody(upstreamData);
       const durationMs = Math.round(performance.now() - startedAt);
       const adapted = upstreamResponse.status >= 200 && upstreamResponse.status < 300
         ? adaptUpstreamResponseToResponses(upstreamData, provider, originalPath, upstreamModel)
@@ -328,7 +346,7 @@ export class LocalGatewayRuntime {
         durationMs,
         retryable: upstreamResponse.status >= 500,
         streamed: false,
-        usageData: upstreamData,
+        usage,
         body: adapted.body,
         contentType: adapted.contentType,
       };
@@ -343,7 +361,7 @@ export class LocalGatewayRuntime {
         durationMs,
         retryable: true,
         streamed: false,
-        usageData: Buffer.alloc(0),
+        usage: {},
         errorPayload: {
           error: aborted ? 'Upstream request timed out before completion' : error instanceof Error ? error.message : 'Upstream request failed',
           provider: provider.name,
@@ -358,7 +376,7 @@ export class LocalGatewayRuntime {
 
   private async candidateProviders(primaryProvider: Provider): Promise<Provider[]> {
     if (!this.routeSettings.failoverEnabled) return [primaryProvider];
-    const providers = await this.providerService.list();
+    const providers = await this.providerService.routingProviders();
     return [
       primaryProvider,
       ...providers.filter((provider) => provider.id !== primaryProvider.id),
@@ -371,7 +389,7 @@ export class LocalGatewayRuntime {
     provider: Provider,
     upstreamModel: string,
     startedAt: number,
-  ): Promise<Buffer> {
+  ): Promise<ParsedUsage> {
     const durationMs = Math.round(performance.now() - startedAt);
     response.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -383,36 +401,37 @@ export class LocalGatewayRuntime {
 
     if (!upstreamResponse.body) {
       response.end();
-      return Buffer.alloc(0);
+      return {};
     }
 
     const reader = upstreamResponse.body.getReader();
     const decoder = new TextDecoder();
+    const usageParser = new StreamingUsageParser();
 
     if (provider.apiFormat === 'responses') {
-      return pipeNativeResponsesStream(reader, response);
+      return pipeNativeResponsesStream(reader, response, usageParser);
     }
 
     const adapter = new ResponsesSSEAdapter(provider.apiFormat, upstreamModel);
-    const capturedChunks: Buffer[] = [];
     try {
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        capturedChunks.push(Buffer.from(result.value));
         const text = decoder.decode(result.value, { stream: true });
+        usageParser.processTextChunk(text);
         for (const event of adapter.processTextChunk(text)) {
           if (!response.write(event)) await waitForDrain(response);
         }
       }
       const finalText = decoder.decode();
+      usageParser.processTextChunk(finalText);
       for (const event of adapter.processTextChunk(finalText)) {
         if (!response.write(event)) await waitForDrain(response);
       }
       for (const event of adapter.finish()) {
         if (!response.write(event)) await waitForDrain(response);
       }
-      return Buffer.concat(capturedChunks);
+      return usageParser.finish();
     } finally {
       response.end();
     }
@@ -423,9 +442,8 @@ export class LocalGatewayRuntime {
     model: string,
     status: number,
     durationMs: number,
-    usageData: Buffer,
+    parsedUsage: ParsedUsage,
   ): Promise<void> {
-    const parsedUsage = usageFromResponseBody(usageData);
     await this.usage.record({
       provider: provider.name,
       model,
@@ -438,24 +456,6 @@ export class LocalGatewayRuntime {
     });
   }
 
-  private async providerForRequestBody(body: Buffer): Promise<Provider | null> {
-    const currentProvider = await this.providerService.current();
-    if (!currentProvider) return null;
-
-    const requestedModel = requestedModelFromBody(body);
-    if (requestedModel) {
-      for (const model of currentProvider.models) {
-        const customName = model.customName.trim() || model.model.trim();
-        const upstreamModel = model.model.trim();
-        const catalogSlug = providerCatalogSlug(currentProvider, model);
-        if (requestedModel === catalogSlug || requestedModel === customName || requestedModel === upstreamModel) {
-          return currentProvider;
-        }
-      }
-    }
-
-    return currentProvider;
-  }
 }
 
 function safePort(port: number): number {
@@ -540,17 +540,19 @@ function safeHeaderValue(value: string): string {
 async function pipeNativeResponsesStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   response: http.ServerResponse,
-): Promise<Buffer> {
-  const capturedChunks: Buffer[] = [];
+  usageParser: StreamingUsageParser,
+): Promise<ParsedUsage> {
+  const decoder = new TextDecoder();
   try {
     while (true) {
       const result = await reader.read();
       if (result.done) break;
       const chunk = Buffer.from(result.value);
-      capturedChunks.push(chunk);
+      usageParser.processTextChunk(decoder.decode(result.value, { stream: true }));
       if (!response.write(chunk)) await waitForDrain(response);
     }
-    return Buffer.concat(capturedChunks);
+    usageParser.processTextChunk(decoder.decode());
+    return usageParser.finish();
   } finally {
     response.end();
   }

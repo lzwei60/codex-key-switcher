@@ -23,12 +23,16 @@ export interface CredentialStore {
 interface LegacyProviderKey {
   id?: string;
   name?: string;
+  apiKey?: string;
   keyPreview?: string;
   enabled?: boolean;
 }
 
 type LegacyProvider = Provider & {
+  apiKey?: string;
+  apiKeys?: Array<{ id?: string; apiKey?: string; keyPreview?: string; enabled?: boolean }>;
   keys?: LegacyProviderKey[];
+  model?: string;
   selectedKeyId?: string;
 };
 
@@ -49,10 +53,7 @@ export class ProviderService {
     const providers = await this.repository.list();
     const normalized: Provider[] = [];
     for (const provider of providers) {
-      await this.migrateLegacySelectedKey(provider as LegacyProvider);
-      const item = normalizeStoredProvider(provider as LegacyProvider);
-      await this.hydrateKeyPreview(item);
-      normalized.push(item);
+      normalized.push(normalizeStoredProvider(provider as LegacyProvider));
     }
     return normalized.sort((a, b) => a.updatedAt - b.updatedAt);
   }
@@ -60,7 +61,31 @@ export class ProviderService {
   async current(): Promise<Provider | null> {
     const currentId = await this.repository.getCurrentId();
     if (!currentId) return null;
-    return (await this.list()).find((provider) => provider.id === currentId) ?? null;
+    const provider = (await this.repository.list()).find((item) => item.id === currentId) as LegacyProvider | undefined;
+    if (!provider) return null;
+    return normalizeStoredProvider(provider);
+  }
+
+  async currentRoutingProviderWithApiKey(): Promise<{ provider: Provider; apiKey: string | null } | null> {
+    const currentId = await this.repository.getCurrentId();
+    if (!currentId) return null;
+    const provider = (await this.repository.list()).find((item) => item.id === currentId) as LegacyProvider | undefined;
+    if (!provider) return null;
+
+    const apiKey = await this.apiKeyWithLegacyMigration(provider);
+    return {
+      provider: normalizeStoredProvider(provider),
+      apiKey,
+    };
+  }
+
+  async routingProviders(): Promise<Provider[]> {
+    const providers = await this.repository.list();
+    const normalized: Provider[] = [];
+    for (const provider of providers) {
+      normalized.push(normalizeStoredProvider(provider as LegacyProvider));
+    }
+    return normalized.sort((a, b) => a.updatedAt - b.updatedAt);
   }
 
   async upsert(input: ProviderInput): Promise<Provider> {
@@ -76,7 +101,7 @@ export class ProviderService {
     }
 
     await this.hydrateKeyPreview(provider);
-    if (!await this.credentials.get(provider.id)) {
+    if (!await this.currentApiKey(provider)) {
       throw new Error('该配置缺少本地 API Key。');
     }
 
@@ -104,7 +129,7 @@ export class ProviderService {
     const rawProvider = (await this.repository.list()).find((item) => item.id === providerId) as LegacyProvider | undefined;
     await this.repository.delete(providerId);
     await this.credentials.delete(providerId);
-    for (const key of rawProvider?.keys ?? []) {
+    for (const key of legacyProviderKeys(rawProvider)) {
       const keyId = key.id?.trim();
       if (keyId && keyId !== defaultKeyId) {
         await this.credentials.delete(legacyCredentialId(providerId, keyId));
@@ -133,7 +158,7 @@ export class ProviderService {
   }
 
   async currentApiKey(provider: Provider): Promise<string | null> {
-    return this.credentials.get(provider.id);
+    return this.apiKeyForProviderId(provider.id);
   }
 
   async exportPayload(includeAPIKeys: boolean): Promise<ProviderExportPayload> {
@@ -141,7 +166,7 @@ export class ProviderService {
     for (const provider of await this.list()) {
       const exported: ProviderExportItem = { ...provider };
       if (includeAPIKeys) {
-        const apiKey = await this.credentials.get(provider.id);
+        const apiKey = await this.currentApiKey(provider);
         if (apiKey) exported.apiKey = apiKey;
       }
       providers.push(exported);
@@ -231,21 +256,53 @@ export class ProviderService {
     return provider;
   }
 
-  private async hydrateKeyPreview(provider: Provider): Promise<void> {
-    const apiKey = await this.credentials.get(provider.id);
+  private async hydrateKeyPreview(provider: Provider, legacyProvider?: LegacyProvider): Promise<void> {
+    const apiKey = legacyProvider
+      ? await this.apiKeyWithLegacyMigration(legacyProvider)
+      : await this.currentApiKey(provider);
     provider.keyPreview = apiKey ? maskApiKey(apiKey) : provider.keyPreview ?? '需要重新填写 Key';
   }
 
   private async migrateLegacySelectedKey(provider: LegacyProvider): Promise<void> {
-    if (await this.credentials.get(provider.id)) return;
+    await this.apiKeyWithLegacyMigration(provider);
+  }
+
+  private async apiKeyForProviderId(providerId: string): Promise<string | null> {
+    const id = providerId.trim();
+    if (!id) return null;
+
+    const provider = (await this.repository.list()).find((item) => item.id === id) as LegacyProvider | undefined;
+    if (provider) return this.apiKeyWithLegacyMigration(provider);
+
+    return this.credentials.get(id);
+  }
+
+  private async apiKeyWithLegacyMigration(provider: LegacyProvider): Promise<string | null> {
+    const apiKey = await this.credentials.get(provider.id);
+    if (apiKey) return apiKey;
+
+    const embeddedApiKey = embeddedLegacyApiKey(provider);
+    if (embeddedApiKey) {
+      await this.persistMigratedApiKey(provider.id, embeddedApiKey);
+      return embeddedApiKey;
+    }
 
     const selectedKey = selectedLegacyProviderKey(provider);
     const selectedKeyId = selectedKey?.id?.trim();
-    if (!selectedKeyId) return;
-
+    if (!selectedKeyId) return null;
     const legacyApiKey = await this.credentials.get(legacyCredentialId(provider.id, selectedKeyId));
     if (legacyApiKey) {
-      await this.credentials.set(provider.id, legacyApiKey);
+      await this.persistMigratedApiKey(provider.id, legacyApiKey);
+    }
+    return legacyApiKey;
+  }
+
+  private async persistMigratedApiKey(providerId: string, apiKey: string): Promise<void> {
+    try {
+      await this.credentials.set(providerId, apiKey);
+    } catch {
+      // If secure storage is temporarily unavailable, still allow the in-memory operation
+      // to use a legacy plaintext/exported key instead of blocking provider switching.
     }
   }
 }
@@ -364,13 +421,14 @@ function normalizeModels(models: ProviderModel[]): ProviderModel[] {
 
 function normalizeStoredProvider(provider: LegacyProvider): Provider {
   const selectedKey = selectedLegacyProviderKey(provider);
+  const selectedModel = provider.selectedModel ?? provider.model ?? '';
   const normalized: Provider = {
     id: provider.id,
     name: provider.name,
     baseURL: provider.baseURL,
     apiFormat: provider.apiFormat,
     models: normalizeModels(provider.models),
-    selectedModel: selectedModelName(provider.models, provider.selectedModel) ?? provider.selectedModel,
+    selectedModel: selectedModelName(provider.models, selectedModel) ?? selectedModel,
     keyPreview: selectedKey?.keyPreview ?? provider.keyPreview ?? '需要重新填写 Key',
     updatedAt: Number(provider.updatedAt) || Date.now(),
   };
@@ -379,13 +437,27 @@ function normalizeStoredProvider(provider: LegacyProvider): Provider {
 }
 
 function selectedLegacyProviderKey(provider: LegacyProvider): LegacyProviderKey | null {
-  const keys = Array.isArray(provider.keys) ? provider.keys : [];
+  const keys = legacyProviderKeys(provider);
   if (!keys.length) return null;
   const selectedKeyId = provider.selectedKeyId?.trim();
   return keys.find((key) => key.id?.trim() === selectedKeyId)
     ?? keys.find((key) => key.enabled !== false)
     ?? keys[0]
     ?? null;
+}
+
+function legacyProviderKeys(provider: LegacyProvider | undefined): LegacyProviderKey[] {
+  if (!provider) return [];
+  if (Array.isArray(provider.keys) && provider.keys.length) return provider.keys;
+  return Array.isArray(provider.apiKeys) ? provider.apiKeys : [];
+}
+
+function embeddedLegacyApiKey(provider: LegacyProvider): string {
+  const directApiKey = provider.apiKey?.trim();
+  if (directApiKey) return directApiKey;
+
+  const selectedKey = selectedLegacyProviderKey(provider);
+  return selectedKey?.apiKey?.trim() ?? '';
 }
 
 function importedApiKeyForProvider(incoming: LegacyProviderExportItem): string {

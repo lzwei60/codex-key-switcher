@@ -1,82 +1,70 @@
-# Migration Plan
+# Migration Record
 
-## Analysis
+Codex Key Switcher has completed its migration from the original macOS-only Objective-C application to the current TypeScript, Next.js, and Electron architecture.
 
-The Objective-C app is macOS-only because UI, status bar, launch-at-login, signing, and credential behavior depend on Cocoa, AppKit, ServiceManagement, and Security frameworks.
+The legacy Objective-C source tree has been removed from the active repository. This document records the migration outcome for maintainers who need to understand the current module boundaries.
 
-## Root Cause
-
-Core logic is coupled to platform code:
-
-- Provider persistence and API key handling are called directly from AppKit views.
-- Route settings are stored through scattered `NSUserDefaults` writes.
-- `LocalGateway.m` combines server, routing, protocol conversion, streaming, logging, and usage recording.
-- Menu and page reload side effects are coupled through `ProviderStore.onChange`.
-
-## Best Practice
-
-Move business logic to TypeScript core packages and keep platform APIs in Electron main-process adapters.
+## Current Architecture
 
 ```text
-Next UI -> preload API -> Electron IPC -> core services -> platform adapters
+Next.js renderer UI
+  -> Electron preload API
+  -> Electron IPC handlers
+  -> TypeScript core services
+  -> platform adapters
 ```
 
-The renderer never receives Node.js access and never reads secrets directly.
+The renderer does not receive Node.js access and does not read provider secrets directly.
 
-## File Mapping
+## Migrated Areas
 
-| Objective-C file | New home |
+| Area | Current home |
 | --- | --- |
-| `ProviderStore.m` | `packages/core/src/provider` |
-| `LocalAPIKeyStore.m` | `apps/desktop/src/services/credential-store.ts` |
-| `LocalGateway.m` | `packages/core/src/gateway` |
-| `CodexConfigWriter.m` | `packages/core/src/codex` plus platform path adapter |
-| `CodexModelCatalogWriter.m` | `packages/core/src/codex` |
-| `UsageStore.m` | `packages/core/src/usage` |
-| `ProviderListView.m` | `apps/web/src/components/CodexKeySwitcherApp.tsx` |
-| `ProviderFormView.m` | `apps/web/src/components/CodexKeySwitcherApp.tsx` |
-| `SettingsView.m` | `apps/web/src/components/CodexKeySwitcherApp.tsx` |
-| `StatsView.m` | `apps/web/src/components/CodexKeySwitcherApp.tsx` |
-| `AppDelegate.m` | `apps/desktop/src/main/main.ts` |
+| Provider model, validation, import/export | `packages/core/src/provider` |
+| Credential persistence | `apps/desktop/src/services/credential-file-store.ts` |
+| Local gateway runtime | `apps/desktop/src/services/local-gateway-runtime.ts` |
+| Gateway protocol adaptation | `apps/desktop/src/services/gateway-protocol-adapter.ts` |
+| Codex config updates and backups | `apps/desktop/src/services/codex-file-config-adapter.ts` |
+| Usage recording and migration | `apps/desktop/src/services/usage-file-repository.ts` |
+| Desktop IPC and native integration | `apps/desktop/src/main/main.ts` |
+| Renderer UI | `apps/web/src/components` |
+| Shared contracts | `packages/shared/src` |
 
-## Migration Order
+## Migration Status
 
-1. Provider model, validation, import/export.
-2. Credential storage on macOS and Windows.
-3. Codex config writer and restore backup.
-4. Local gateway non-stream request forwarding.
-5. Responses to Chat Completions and Anthropic conversion.
-6. SSE streaming conversion.
-7. Usage statistics and diagnostics.
-8. Packaging, signing, and auto-start.
+- `v1.0.0` is the first stable release on the TypeScript, Next.js, and Electron architecture.
+- Provider persistence is handled by `ProviderFileRepository`.
+- Credential writes go through `CredentialFileStore` and Electron `safeStorage`.
+- Provider metadata reads do not proactively decrypt API keys. Key reads are deferred until validation, direct mode writes, gateway forwarding, or export with keys.
+- Legacy provider key formats are supported when a key is actually needed, including selected-key credentials and imported `apiKey` or `apiKeys` payloads.
+- Provider selected model switching is exposed through typed desktop APIs.
+- Provider import/export is handled through Electron file dialogs.
+- Codex config update, auth update, backups, restore scripts, and gateway detection are handled by `CodexFileConfigAdapter`.
+- Diagnostics read real Codex directory and local-gateway state through Electron IPC.
+- Local gateway start, stop, status, authentication, provider lookup, model override, and request forwarding are handled by `LocalGatewayRuntime`.
+- Responses, OpenAI-compatible Chat Completions, and Anthropic Messages protocol conversion are handled by `gateway-protocol-adapter`.
+- Usage records are persisted in SQLite through `UsageFileRepository`.
+- Legacy JSON usage records are migrated to SQLite once and then renamed with a `.migrated` suffix.
+- Production Electron loading resolves the exported Next.js app instead of depending on `next dev`.
+- Electron main and preload entrypoints are bundled with `esbuild`.
+- `electron-builder` packaging is configured for macOS and Windows targets.
+- Product icon assets are generated through `scripts/generate-icons.mjs`.
 
-## Hidden Risks
+## v1.0.0 Compatibility Notes
 
-- Streaming conversion needs fixture tests before refactor.
-- Windows secrets must use encryption, not plain JSON.
-- Production desktop builds must be signed and notarized before external macOS distribution.
+- Legacy AppKit `model` fields are normalized to the current `selectedModel` field.
+- Legacy multi-key records are collapsed into the selected provider credential for the current provider ID when the key is first needed.
+- Startup, tray refresh, diagnostics, and provider-list rendering intentionally stay metadata-only to avoid macOS Keychain prompts on first launch.
+- Direct provider mode accepts Responses-format providers only. Chat Completions and Anthropic Messages providers must continue through local gateway protocol conversion.
+- Usage statistics are available for local gateway requests only. Direct provider mode bypasses the gateway and cannot record local request logs or token usage.
+
+## Remaining Maintenance Notes
+
+- Native credential backends can replace `CredentialFileStore` later without changing renderer code.
 - Windows installer builds should be verified on a Windows runner before release.
-
-## Progress
-
-- Completed: Provider persistence moved from in-memory storage to `ProviderFileRepository`.
-- Completed: API Key storage moved behind `CredentialFileStore`; new writes require Electron `safeStorage` OS encryption.
-- Completed: Provider selected model switching through core service and Electron IPC.
-- Completed: Provider import/export through Electron file dialogs; export can omit or include API keys.
-- Pending: Native credential backends can replace `CredentialFileStore` later without changing renderer code.
-- Completed: Core `CodexConfigWriter.m` behavior migrated into `CodexFileConfigAdapter`: config update, auth update, managed backups, restore script, restore backup, and gateway detection.
-- Completed: Diagnostics now reads the real Codex directory and local-gateway config state through Electron IPC.
-- Completed: `CodexModelCatalogWriter.m` migrated into `CodexModelCatalogWriter` TypeScript service.
-- Completed: `LocalGateway.m` first phase migrated into `LocalGatewayRuntime`: real HTTP start/stop/status, local authentication, active provider lookup, active model override, and native Responses non-stream forwarding.
-- Completed: Non-stream protocol adapters migrated into `gateway-protocol-adapter`: Responses request conversion to Chat Completions and Anthropic Messages, plus upstream response conversion back to Responses JSON.
-- Completed: SSE streaming conversion migrated for native Responses pass-through and adapted Chat Completions / Anthropic Messages text and function-call deltas.
-- Completed: Usage recording migrated through `UsageService` and `UsageFileRepository`; gateway requests now persist provider, model, status, duration, source, and parsed token usage when upstream responses expose it.
-- Completed: Failover migrated in `LocalGatewayRuntime`; when enabled in route settings, retryable upstream failures try the next configured provider and response headers expose whether fallback was used.
-- Completed: Production Electron loading no longer depends on `next dev`; main process resolves the exported Next `index.html` from development build output or packaged resources.
-- Completed: Desktop startup settings migrated through Electron `app.getLoginItemSettings` / `app.setLoginItemSettings` and exposed through typed preload IPC.
-- Completed: Desktop production build now bundles Electron main/preload with `esbuild`, so runtime no longer depends on workspace TypeScript packages.
-- Completed: `electron-builder` packaging is configured for mac universal, mac x64, mac arm64, and Windows x64; mac arm64 and mac universal DMG builds have been verified locally.
-- Completed: Product icon assets are generated through `scripts/generate-icons.mjs`; mac packages now use `icon.icns` and Windows packages are configured to use `icon.ico`.
+- Production macOS builds should be signed and notarized before external distribution.
+- Streaming protocol conversion should continue to be protected by fixture and regression tests.
+- Release packaging should continue to verify that About, diagnostics, update checks, and installer metadata all report the same desktop version.
 
 ## Failover Behavior
 

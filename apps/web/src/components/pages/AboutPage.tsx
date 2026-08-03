@@ -21,7 +21,7 @@ export function AboutPage() {
       <dl>
         <div>
           <dt>版本：</dt>
-          <dd>1.1.0</dd>
+          <dd>{report.appVersion}</dd>
         </div>
         <div>
           <dt>本地代理：</dt>
