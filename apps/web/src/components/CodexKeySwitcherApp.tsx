@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { AppShell } from './layout/AppShell';
 import { AboutPage } from './pages/AboutPage';
 import { DiagnosticsPage } from './pages/DiagnosticsPage';
@@ -17,12 +17,6 @@ export function CodexKeySwitcherApp() {
   const [settingsTab, setSettingsTab] = useState<SettingsTabKey>('general');
   const providers = useProviders();
   const gateway = useGateway();
-  const usage = useUsage();
-  const refreshUsage = usage.refresh;
-
-  useEffect(() => {
-    if (page === 'stats') void refreshUsage();
-  }, [page, refreshUsage]);
 
   return (
     <AppShell
@@ -42,7 +36,6 @@ export function CodexKeySwitcherApp() {
           onSave={providers.saveProvider}
           onStartGateway={gateway.start}
           onSetCurrent={providers.setCurrentProvider}
-          onSetSelectedModel={providers.setSelectedModel}
           onStopGateway={gateway.stop}
           onExport={providers.exportProviders}
           onImport={providers.importProviders}
@@ -53,16 +46,23 @@ export function CodexKeySwitcherApp() {
         <SettingsPage activeTab={settingsTab} onTabChange={setSettingsTab} />
       ) : null}
       {page === 'stats' ? (
-        <StatsPage
-          loading={usage.loading}
-          onClearLogs={usage.clearLogs}
-          onLogPageChange={usage.changeLogPage}
-          onRefresh={usage.refresh}
-          stats={usage.stats}
-        />
+        <StatsPageContainer />
       ) : null}
       {page === 'diagnostics' ? <DiagnosticsPage /> : null}
       {page === 'about' ? <AboutPage /> : null}
     </AppShell>
+  );
+}
+
+function StatsPageContainer() {
+  const usage = useUsage();
+  return (
+    <StatsPage
+      loading={usage.loading}
+      onClearLogs={usage.clearLogs}
+      onLogPageChange={usage.changeLogPage}
+      onRefresh={usage.refresh}
+      stats={usage.stats}
+    />
   );
 }

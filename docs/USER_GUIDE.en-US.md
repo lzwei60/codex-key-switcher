@@ -4,11 +4,13 @@ Codex Key Switcher is a desktop app for managing Codex API keys, providers, mode
 
 ## Supported Platforms
 
-- macOS Apple Silicon: use `Codex Key Switcher-0.1.0-arm64.dmg`
-- macOS Intel: use `Codex Key Switcher-0.1.0-x64.dmg`
-- Windows x64: use `Codex Key Switcher-0.1.0-x64.exe`
+- macOS Apple Silicon: use `Codex-Key-Switcher-1.0.0-arm64.dmg`
+- macOS Intel: use `Codex-Key-Switcher-1.0.0-x64.dmg`
+- Windows x64: use `Codex-Key-Switcher-Setup-1.0.0-x64.exe`
 
 The current installers are unsigned and not notarized. macOS or Windows may show a security warning on first install.
+
+The current stable version is `v1.0.0`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
 
 ## First Run
 
@@ -78,6 +80,19 @@ Restart Codex, or close the current conversation and open a new one, in these ca
 
 When switching providers or models, the app suggests opening a new conversation because existing conversations may continue using old context.
 
+## Direct Provider Mode
+
+Direct provider mode does not start the local gateway. It writes the current provider base URL, API key, and upstream model directly into the Codex config.
+
+Direct mode limitations:
+
+- It supports Responses-format providers only.
+- Chat Completions and Anthropic Messages providers must use local gateway mode so the local gateway can perform protocol conversion.
+- Direct mode does not record local request logs or token statistics.
+- In direct mode, switching to a Chat Completions provider from the tray menu is blocked and the app shows a reason.
+
+After switching the direct provider or model, close the current Codex conversation and open a new one. If the new conversation still does not pick up the change, restart Codex.
+
 ## Tray Menu
 
 The app is tray-first. Closing the main window hides it, but the app keeps running in the tray.
@@ -98,7 +113,7 @@ When you choose Quit, the app stops the local gateway and tries to restore the o
 
 ## Settings
 
-The Settings page has two tabs.
+The Settings page has three tabs.
 
 General:
 
@@ -118,7 +133,23 @@ Gateway:
 - Failover
 - Check port
 
+Updates:
+
+- Check the latest version from GitHub Releases
+- Show the current version, latest version, and current platform
+- Open the matching installer download link for the current platform
+- Open release notes
+
+Updates are installed manually. Because the installers are unsigned, macOS or Windows may show a security warning on first launch.
+
 The default port is `3456`. Valid ports are from `1024` to `65535`.
+
+Privacy:
+
+- Local usage recording can be disabled.
+- Retention days can be configured.
+- Maximum retained records can be configured.
+- Changes affect future local gateway requests and do not backfill historical data.
 
 ## Usage Stats
 
@@ -136,6 +167,8 @@ It includes:
 - Request logs
 
 Stats are recorded only when requests go through the local gateway.
+
+Stats do not record request bodies, response bodies, or API keys. After local usage recording is disabled, new requests are not written into the local usage database.
 
 ## Diagnostics and Recovery
 
@@ -184,3 +217,12 @@ This is expected. Closing the window hides the main UI. The app keeps running in
 
 On quit, the app stops the local gateway and restores the original Codex config. Codex needs to reload its config, so restart Codex or open a new conversation.
 
+### Why should first launch not ask for my local machine password?
+
+First launch, tray refresh, and provider-list rendering do not proactively decrypt API keys, so the app normally should not ask for the local machine password immediately after installation.
+
+macOS may show a Keychain authorization prompt when the app actually needs to read a local key, for example when checking a model, enabling direct mode, forwarding a local gateway request, or exporting providers with API keys included. If the prompt appears on first launch before any action, confirm that the installed version is `v1.0.0` or newer.
+
+### Provider switching still says the local API key is missing after upgrading
+
+`v1.0.0` automatically supports legacy key storage formats when a key is actually needed. If the error still appears, the local secure storage may no longer be able to decrypt the old key, or application data may have been migrated without the system credential store. Re-enter the API key through the edit flow and save the provider.

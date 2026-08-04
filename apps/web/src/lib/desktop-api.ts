@@ -1,4 +1,4 @@
-import type { AppPreferences, AppStartupSettings, CodexConfigDirectorySettings, DesktopApi, DiagnosticsReport, GatewayStatus, PortCheckResult, Provider, RouteSettings, UsageRecord, UsageStatsSnapshot } from '@codex-key-switcher/shared';
+import { defaultUsageSettings, type AppPreferences, type AppStartupSettings, type AppUpdateInfo, type CodexConfigDirectorySettings, type DesktopApi, type DiagnosticsReport, type GatewayStatus, type PortCheckResult, type Provider, type RouteSettings, type UsageSettings, type UsageStatsSnapshot } from '@codex-key-switcher/shared';
 
 declare global {
   interface Window {
@@ -34,6 +34,7 @@ const fallbackRouteSettings: RouteSettings = {
 let fallbackGatewayRunning = false;
 let fallbackCurrentProviderId = fallbackProviders[0]?.id ?? '';
 let fallbackRouteSettingsState: RouteSettings = { ...fallbackRouteSettings };
+let fallbackDirectSessionTarget: GatewayStatus['directSessionTarget'];
 
 const fallbackStartupSettings: AppStartupSettings = {
   supported: false,
@@ -49,7 +50,7 @@ let fallbackPreferences: AppPreferences = {
   theme: 'system',
 };
 
-const fallbackUsageRecords: UsageRecord[] = [];
+let fallbackUsageSettings: UsageSettings = { ...defaultUsageSettings };
 let fallbackCodexConfigDirectory: CodexConfigDirectorySettings = {
   directory: '~/.codex',
   isDefault: true,
@@ -58,6 +59,7 @@ let fallbackCodexConfigDirectory: CodexConfigDirectorySettings = {
 function fallbackDiagnosticsReport(): DiagnosticsReport {
   const status = fallbackGatewayStatus();
   const report: DiagnosticsReport = {
+    appVersion: '1.0.0',
     routeEnabled: fallbackRouteSettingsState.enabled,
     connectionMode: fallbackRouteSettingsState.mode,
     codexUsesGateway: false,
@@ -99,6 +101,13 @@ export function getDesktopApi(): DesktopApi {
         return fallbackCodexConfigDirectory;
       },
       chooseCodexConfigDirectory: async (): Promise<CodexConfigDirectorySettings | null> => null,
+      checkForUpdates: async (): Promise<AppUpdateInfo> => ({
+        currentVersion: '1.0.0',
+        platform: 'unsupported',
+        status: 'not-configured',
+        errorMessage: '桌面 API 未连接，当前 Web 预览模式不能检查更新。',
+      }),
+      openUpdateDownload: async (): Promise<void> => undefined,
     },
     providers: {
       list: async () => [...fallbackProviders],
@@ -128,6 +137,7 @@ export function getDesktopApi(): DesktopApi {
       setCurrent: async (id) => {
         if (!fallbackProviders.some((provider) => provider.id === id)) throw new Error('配置不存在。');
         fallbackCurrentProviderId = id;
+        if (fallbackRouteSettingsState.mode === 'direct_provider') fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
       },
       setSelectedModel: async (providerId, model) => {
         const provider = fallbackProviders.find((item) => item.id === providerId);
@@ -136,6 +146,7 @@ export function getDesktopApi(): DesktopApi {
         if (!selected) throw new Error('模型不存在，无法切换。');
         provider.selectedModel = selected.customName || selected.model;
         provider.updatedAt = Date.now();
+        if (fallbackRouteSettingsState.mode === 'direct_provider') fallbackDirectSessionTarget = fallbackDirectTargetForProvider(provider);
       },
       validateModel: async (input) => ({
         ok: false,
@@ -165,10 +176,16 @@ export function getDesktopApi(): DesktopApi {
         return fallbackGatewayStatus();
       },
       settings: async (): Promise<RouteSettings> => fallbackRouteSettingsState,
-      saveSettings: async (input): Promise<RouteSettings> => {
+      saveSettings: async (input) => {
+        const changed = JSON.stringify(fallbackRouteSettingsState) !== JSON.stringify(input);
         fallbackRouteSettingsState = input;
         if (!input.enabled) fallbackGatewayRunning = false;
-        return fallbackRouteSettingsState;
+        if (input.mode === 'direct_provider' && input.enabled) fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
+        return {
+          settings: fallbackRouteSettingsState,
+          changed,
+          cancelled: false,
+        };
       },
       checkPort: async (input): Promise<PortCheckResult> => ({
         available: input.listenPort >= 1024 && input.listenPort <= 65535,
@@ -193,14 +210,46 @@ export function getDesktopApi(): DesktopApi {
       copyReport: async (): Promise<void> => undefined,
     },
     usage: {
-      snapshot: async (): Promise<UsageRecord[]> => fallbackUsageRecords,
       stats: async (input): Promise<UsageStatsSnapshot> => fallbackUsageStats(input.logPage, input.logPageSize),
       clearLogs: async (): Promise<UsageStatsSnapshot> => {
-        fallbackUsageRecords.splice(0);
         return fallbackUsageStats(1, 10);
+      },
+      settings: async (): Promise<UsageSettings> => ({ ...fallbackUsageSettings }),
+      saveSettings: async (input): Promise<UsageSettings> => {
+        fallbackUsageSettings = {
+          enabled: Boolean(input.enabled),
+          retentionDays: clampUsageSetting(input.retentionDays, 1, 365, defaultUsageSettings.retentionDays),
+          maxRecords: clampUsageSetting(input.maxRecords, 100, 100_000, defaultUsageSettings.maxRecords),
+        };
+        return { ...fallbackUsageSettings };
       },
     },
   };
+}
+
+function clampUsageSetting(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function fallbackDirectTargetForProvider(provider: Provider | null): GatewayStatus['directSessionTarget'] {
+  if (!provider) return undefined;
+  const selectedModel = provider.models.find((model) => model.customName === provider.selectedModel || model.model === provider.selectedModel);
+  const modelName = selectedModel?.model || provider.selectedModel;
+  const displayModel = selectedModel?.customName || selectedModel?.model || provider.selectedModel;
+  return {
+    id: `${provider.id}:${modelName}`,
+    providerId: provider.id,
+    providerName: provider.name,
+    baseURL: provider.baseURL,
+    modelName,
+    displayModel,
+    appliedAt: Date.now(),
+  };
+}
+
+function fallbackCurrentProvider(): Provider | null {
+  return fallbackProviders.find((provider) => provider.id === fallbackCurrentProviderId) ?? null;
 }
 
 function fallbackUsageStats(page: number, pageSize: number): UsageStatsSnapshot {
@@ -228,15 +277,24 @@ function fallbackUsageStats(page: number, pageSize: number): UsageStatsSnapshot 
 }
 
 function fallbackGatewayStatus(): GatewayStatus {
-  const currentProvider = fallbackProviders.find((provider) => provider.id === fallbackCurrentProviderId);
+  const currentProvider = fallbackCurrentProvider();
+  if (fallbackRouteSettingsState.mode === 'direct_provider' && !fallbackDirectSessionTarget) {
+    fallbackDirectSessionTarget = fallbackDirectTargetForProvider(currentProvider);
+  }
   const status: GatewayStatus = {
     running: fallbackRouteSettingsState.mode === 'local_gateway' && fallbackGatewayRunning,
     mode: fallbackRouteSettingsState.mode,
     endpoint: fallbackRouteSettingsState.mode === 'direct_provider'
-      ? currentProvider?.baseURL ?? '未选择供应商'
+      ? fallbackDirectSessionTarget?.baseURL ?? currentProvider?.baseURL ?? '未选择供应商'
       : 'http://127.0.0.1:14567/v1',
   };
-  if (currentProvider) {
+  if (fallbackDirectSessionTarget) {
+    status.currentProviderId = fallbackDirectSessionTarget.providerId;
+    status.currentProviderName = fallbackDirectSessionTarget.providerName;
+    status.currentModel = fallbackDirectSessionTarget.displayModel;
+    status.directSessionTarget = fallbackDirectSessionTarget;
+  } else if (currentProvider) {
+    status.currentProviderId = currentProvider.id;
     status.currentProviderName = currentProvider.name;
     status.currentModel = currentProvider.selectedModel;
   }

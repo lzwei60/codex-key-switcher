@@ -1,4 +1,4 @@
-import type { Provider, ProviderModel } from '@codex-key-switcher/shared';
+import type { DirectSessionTarget, Provider, ProviderModel } from '@codex-key-switcher/shared';
 
 export function modelCustomName(model: ProviderModel): string {
   const customName = model.customName.trim();
@@ -44,4 +44,19 @@ export function providerSelectedCatalogModel(provider: Provider): string {
 export function providerSelectedDisplayModel(provider: Provider): string {
   const model = providerSelectedModel(provider);
   return model ? modelCustomName(model) : 'gpt-4.1';
+}
+
+export function directSessionTargetForProvider(provider: Provider, appliedAt = Date.now()): DirectSessionTarget {
+  const selectedModel = providerSelectedModel(provider);
+  const modelName = selectedModel?.model.trim() || provider.selectedModel.trim();
+  const displayModel = providerSelectedDisplayModel(provider);
+  return {
+    id: `${provider.id}:${modelName}`,
+    providerId: provider.id,
+    providerName: provider.name,
+    baseURL: provider.baseURL,
+    modelName,
+    displayModel,
+    appliedAt,
+  };
 }

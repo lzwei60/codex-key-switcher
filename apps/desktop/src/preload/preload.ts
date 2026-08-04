@@ -10,6 +10,8 @@ const desktopAPI: DesktopApi = {
     codexConfigDirectory: () => ipcRenderer.invoke('app:codex-config-directory'),
     saveCodexConfigDirectory: (directory) => ipcRenderer.invoke('app:save-codex-config-directory', directory),
     chooseCodexConfigDirectory: () => ipcRenderer.invoke('app:choose-codex-config-directory'),
+    checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+    openUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:open-update-download', downloadUrl),
   },
   providers: {
     list: () => ipcRenderer.invoke('providers:list'),
@@ -39,9 +41,10 @@ const desktopAPI: DesktopApi = {
     copyReport: () => ipcRenderer.invoke('diagnostics:copy-report'),
   },
   usage: {
-    snapshot: () => ipcRenderer.invoke('usage:snapshot'),
     stats: (input) => ipcRenderer.invoke('usage:stats', input),
     clearLogs: () => ipcRenderer.invoke('usage:clear-logs'),
+    settings: () => ipcRenderer.invoke('usage:settings'),
+    saveSettings: (input) => ipcRenderer.invoke('usage:save-settings', input),
   },
 };
 

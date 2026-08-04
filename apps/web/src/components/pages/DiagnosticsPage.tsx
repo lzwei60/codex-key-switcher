@@ -37,6 +37,12 @@ export function DiagnosticsPage() {
     ['恢复备份', report.restoreAvailable ? '可用' : '不可用'],
     ['当前供应商', report.currentProviderName ?? '未选择'],
     ['当前模型', report.currentModel ?? '未选择'],
+    ...(report.connectionMode === 'direct_provider'
+      ? [
+          ['直连 Session', report.directSessionTarget ? `${report.directSessionTarget.providerName} / ${report.directSessionTarget.displayModel}` : '未应用'],
+          ['直连模型名', report.directSessionTarget?.modelName ?? '未应用'],
+        ] as const
+      : []),
     ['Codex 目录', report.codexDirectory],
     ['恢复脚本', report.restoreScriptPath],
   ] as const;

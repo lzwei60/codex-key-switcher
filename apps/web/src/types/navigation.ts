@@ -1,3 +1,3 @@
 export type PageKey = 'providers' | 'settings' | 'stats' | 'diagnostics' | 'about';
 
-export type SettingsTabKey = 'general' | 'route';
+export type SettingsTabKey = 'general' | 'route' | 'usage' | 'updates';

@@ -16,6 +16,19 @@ Treat these areas as security-sensitive:
 - Usage logs and diagnostic output.
 - Release signing, notarization, and installer packaging.
 
+## Credential Handling
+
+- Provider API keys are stored locally and encrypted through Electron `safeStorage`.
+- The renderer process should never receive plaintext API keys.
+- Startup, tray refresh, diagnostics, and provider-list rendering should not decrypt API keys.
+- Plaintext key reads should be limited to model checks, provider-switch validation, direct provider config writes, local gateway forwarding, and exports where the user explicitly chooses to include API keys.
+- Usage records and diagnostics must not include request bodies, response bodies, authorization headers, or API keys.
+
 ## Supported Versions
 
-Until the first stable release, only the current `main` branch is supported.
+| Version | Supported |
+| --- | --- |
+| `1.0.x` | Yes |
+| `< 1.0.0` | No |
+
+Only the latest stable `1.0.x` release and the current protected branch are supported for security fixes.

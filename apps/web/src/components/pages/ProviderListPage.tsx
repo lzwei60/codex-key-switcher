@@ -9,7 +9,7 @@ import {
   SettingOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { App, Button, Card, Dropdown, Empty, Popconfirm, Select, Space, Switch, Tag, Tooltip, Typography } from 'antd';
+import { App, Button, Card, Dropdown, Empty, Popconfirm, Space, Switch, Tag, Tooltip, Typography } from 'antd';
 import type { GatewayStatus, Provider, ProviderInput, RouteSettings } from '@codex-key-switcher/shared';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { PageHeader } from '../layout/AppShell';
@@ -30,7 +30,6 @@ export function ProviderListPage({
   onSave,
   onDelete,
   onSetCurrent,
-  onSetSelectedModel,
   onExport,
   onImport,
   onOpenSettings,
@@ -46,7 +45,6 @@ export function ProviderListPage({
   onSave(input: ProviderInput): Promise<Provider>;
   onDelete(id: string): Promise<void>;
   onSetCurrent(id: string): Promise<void>;
-  onSetSelectedModel(providerId: string, model: string): Promise<void>;
   onExport(includeAPIKeys: boolean): Promise<boolean>;
   onImport(): Promise<number>;
   onOpenSettings(): void;
@@ -58,7 +56,7 @@ export function ProviderListPage({
   const [routeSettings, setRouteSettings] = useState<RouteSettings | null>(null);
   const [routeSaving, setRouteSaving] = useState(false);
 
-  const currentProviderName = gateway?.currentProviderName ?? '';
+  const currentProviderId = gateway?.currentProviderId ?? '';
   const providerCountText = useMemo(() => `${providers.length} 个配置`, [providers.length]);
   const routeEnabled = routeSettings?.enabled ?? Boolean(gateway?.running);
   const isDirectMode = routeSettings?.mode === 'direct_provider';
@@ -113,23 +111,17 @@ export function ProviderListPage({
 
   async function runSetCurrent(providerId: string) {
     try {
+      const nextProvider = providers.find((provider) => provider.id === providerId);
       await onSetCurrent(providerId);
       await onRefreshGateway();
       await refreshRouteSettings();
-      if (!isDirectMode) message.success('当前供应商已更新');
+      if (isDirectMode) {
+        message.success(`已写入 ${nextProvider?.name ?? '新供应商'} 的直连配置，请在 Codex 新开会话；未生效再重启。`);
+      } else {
+        message.success('当前供应商已更新');
+      }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '切换失败');
-    }
-  }
-
-  async function runSetSelectedModel(providerId: string, model: string) {
-    try {
-      await onSetSelectedModel(providerId, model);
-      await onRefreshGateway();
-      await refreshRouteSettings();
-      message.success('默认模型已更新');
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '模型切换失败');
     }
   }
 
@@ -182,11 +174,11 @@ export function ProviderListPage({
     setRouteSaving(true);
     try {
       const currentSettings = await getDesktopApi().gateway.settings();
-      const nextSettings = await getDesktopApi().gateway.saveSettings({
+      const result = await getDesktopApi().gateway.saveSettings({
         ...currentSettings,
         failoverEnabled: checked,
       });
-      setRouteSettings(nextSettings);
+      setRouteSettings(result.settings);
       await onRefreshGateway();
       message.success(checked ? '故障转移已启用' : '故障转移已停用');
     } catch (error) {
@@ -251,7 +243,7 @@ export function ProviderListPage({
           </Space>
           <Text type="secondary">
             {isDirectMode
-              ? routeEnabled ? `直连地址 ${gateway?.endpoint ?? '未选择供应商'}` : '直连配置已停用'
+              ? routeEnabled ? `直连 Session ${gateway?.currentProviderName ?? '未选择供应商'} / ${gateway?.currentModel ?? '未选择模型'} · ${gateway?.endpoint ?? ''}` : '直连配置已停用'
               : gateway?.running ? `当前端点 ${gateway.endpoint}` : '路由总开关已停止'}
           </Text>
         </div>
@@ -260,7 +252,14 @@ export function ProviderListPage({
       {providers.length ? (
         <div className="provider-card-grid">
           {providers.map((provider) => {
-            const isCurrent = provider.name === currentProviderName;
+            const directModeUnsupported = isDirectMode && provider.apiFormat !== 'responses';
+            const isCurrent = provider.id === currentProviderId;
+            const currentButtonDisabled = isCurrent || directModeUnsupported;
+            const currentButton = (
+              <Button disabled={currentButtonDisabled} onClick={() => void runSetCurrent(provider.id)}>
+                {isCurrent ? '使用中' : '设为当前'}
+              </Button>
+            );
             return (
               <Card
                 className={isCurrent ? 'provider-card provider-card-current' : 'provider-card'}
@@ -284,19 +283,7 @@ export function ProviderListPage({
                 <div className="provider-card-body">
                   <ProviderField
                     label="当前模型"
-                    value={(
-                      <Select
-                        className="provider-model-select"
-                        onChange={(value) => void runSetSelectedModel(provider.id, value)}
-                        options={provider.models.map((model) => ({
-                          label: model.customName || model.model,
-                          value: model.customName || model.model,
-                        }))}
-                        popupMatchSelectWidth={false}
-                        size="small"
-                        value={provider.selectedModel}
-                      />
-                    )}
+                    value={<ProviderSelectedModelSummary provider={provider} />}
                   />
                   <ProviderField label="模型" value={<ProviderModelsSummary provider={provider} />} />
                   <ProviderField label="Base URL" value={provider.baseURL} />
@@ -304,9 +291,11 @@ export function ProviderListPage({
                 </div>
 
                 <div className="provider-card-actions">
-                  <Button disabled={isCurrent} onClick={() => void runSetCurrent(provider.id)}>
-                    {isCurrent ? '使用中' : '设为当前'}
-                  </Button>
+                  {directModeUnsupported && !isCurrent ? (
+                    <Tooltip title="直连供应商模式仅支持 Responses 格式；Chat Completions 和 Anthropic 请使用本地路由。">
+                      <span>{currentButton}</span>
+                    </Tooltip>
+                  ) : currentButton}
                   <Button icon={<EditOutlined />} onClick={() => openEdit(provider)}>编辑</Button>
                   <Popconfirm
                     description="删除后本地保存的 API Key 也会一并删除。"
@@ -356,6 +345,19 @@ function ProviderModelsSummary({ provider }: Readonly<{ provider: Provider }>) {
       title={summary || '暂无模型'}
     >
       <span className="provider-models-summary">{summary || '暂无模型'}</span>
+    </Tooltip>
+  );
+}
+
+function ProviderSelectedModelSummary({ provider }: Readonly<{ provider: Provider }>) {
+  const selectedModel = provider.selectedModel || '未选择';
+  return (
+    <Tooltip
+      overlayClassName="provider-models-tooltip"
+      placement="topLeft"
+      title={selectedModel}
+    >
+      <span className="provider-models-summary">{selectedModel}</span>
     </Tooltip>
   );
 }

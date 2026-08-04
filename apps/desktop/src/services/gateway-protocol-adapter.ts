@@ -18,6 +18,34 @@ export interface ParsedUsage {
   cachedTokens?: number;
 }
 
+export class StreamingUsageParser {
+  private lineBuffer = '';
+  private parsedUsage: ParsedUsage = {};
+
+  processTextChunk(chunk: string): void {
+    this.lineBuffer += chunk;
+    const lines = this.lineBuffer.split(/\r?\n/);
+    this.lineBuffer = lines.pop() ?? '';
+    for (const line of lines) this.processSSELine(line);
+  }
+
+  finish(): ParsedUsage {
+    if (this.lineBuffer.trim()) this.processSSELine(this.lineBuffer);
+    this.lineBuffer = '';
+    return this.parsedUsage;
+  }
+
+  private processSSELine(rawLine: string): void {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const jsonText = line.slice(5).trim();
+    if (!jsonText || jsonText === '[DONE]') return;
+    const payload = jsonObjectFromString(jsonText);
+    const usage = usageObjectFromPayload(payload);
+    if (usage) this.parsedUsage = usageFromObject(usage);
+  }
+}
+
 export class ResponsesSSEAdapter {
   private readonly responseId = `resp_${crypto.randomUUID()}`;
   private readonly textItemId = `msg_${crypto.randomUUID()}`;
