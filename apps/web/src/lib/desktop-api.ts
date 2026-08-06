@@ -20,6 +20,8 @@ const fallbackProviders: Provider[] = [
   },
 ];
 
+const fallbackAppVersion = process.env.NEXT_PUBLIC_APP_VERSION || '1.0.1';
+
 const fallbackRouteSettings: RouteSettings = {
   mode: 'local_gateway',
   enabled: true,
@@ -59,7 +61,7 @@ let fallbackCodexConfigDirectory: CodexConfigDirectorySettings = {
 function fallbackDiagnosticsReport(): DiagnosticsReport {
   const status = fallbackGatewayStatus();
   const report: DiagnosticsReport = {
-    appVersion: '1.0.0',
+    appVersion: fallbackAppVersion,
     routeEnabled: fallbackRouteSettingsState.enabled,
     connectionMode: fallbackRouteSettingsState.mode,
     codexUsesGateway: false,
@@ -102,7 +104,7 @@ export function getDesktopApi(): DesktopApi {
       },
       chooseCodexConfigDirectory: async (): Promise<CodexConfigDirectorySettings | null> => null,
       checkForUpdates: async (): Promise<AppUpdateInfo> => ({
-        currentVersion: '1.0.0',
+        currentVersion: fallbackAppVersion,
         platform: 'unsupported',
         status: 'not-configured',
         errorMessage: '桌面 API 未连接，当前 Web 预览模式不能检查更新。',
@@ -137,7 +139,9 @@ export function getDesktopApi(): DesktopApi {
       setCurrent: async (id) => {
         if (!fallbackProviders.some((provider) => provider.id === id)) throw new Error('配置不存在。');
         fallbackCurrentProviderId = id;
-        if (fallbackRouteSettingsState.mode === 'direct_provider') fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
+        if (fallbackRouteSettingsState.mode === 'direct_provider' && fallbackRouteSettingsState.enabled) {
+          fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
+        }
       },
       setSelectedModel: async (providerId, model) => {
         const provider = fallbackProviders.find((item) => item.id === providerId);
@@ -146,7 +150,9 @@ export function getDesktopApi(): DesktopApi {
         if (!selected) throw new Error('模型不存在，无法切换。');
         provider.selectedModel = selected.customName || selected.model;
         provider.updatedAt = Date.now();
-        if (fallbackRouteSettingsState.mode === 'direct_provider') fallbackDirectSessionTarget = fallbackDirectTargetForProvider(provider);
+        if (fallbackRouteSettingsState.mode === 'direct_provider' && fallbackRouteSettingsState.enabled) {
+          fallbackDirectSessionTarget = fallbackDirectTargetForProvider(provider);
+        }
       },
       validateModel: async (input) => ({
         ok: false,
@@ -168,18 +174,28 @@ export function getDesktopApi(): DesktopApi {
     gateway: {
       status: async (): Promise<GatewayStatus> => fallbackGatewayStatus(),
       start: async (): Promise<GatewayStatus> => {
+        fallbackRouteSettingsState = { ...fallbackRouteSettingsState, enabled: true, disabledExplicitly: false };
         fallbackGatewayRunning = true;
+        if (fallbackRouteSettingsState.mode === 'direct_provider') {
+          fallbackGatewayRunning = false;
+          fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
+        }
         return fallbackGatewayStatus();
       },
       stop: async (): Promise<GatewayStatus> => {
         fallbackGatewayRunning = false;
+        fallbackRouteSettingsState = { ...fallbackRouteSettingsState, enabled: false, disabledExplicitly: true };
+        if (fallbackRouteSettingsState.mode === 'direct_provider') fallbackDirectSessionTarget = undefined;
         return fallbackGatewayStatus();
       },
       settings: async (): Promise<RouteSettings> => fallbackRouteSettingsState,
       saveSettings: async (input) => {
         const changed = JSON.stringify(fallbackRouteSettingsState) !== JSON.stringify(input);
         fallbackRouteSettingsState = input;
-        if (!input.enabled) fallbackGatewayRunning = false;
+        if (!input.enabled) {
+          fallbackGatewayRunning = false;
+          fallbackDirectSessionTarget = undefined;
+        }
         if (input.mode === 'direct_provider' && input.enabled) fallbackDirectSessionTarget = fallbackDirectTargetForProvider(fallbackCurrentProvider());
         return {
           settings: fallbackRouteSettingsState,
@@ -199,10 +215,13 @@ export function getDesktopApi(): DesktopApi {
       resyncCodexConfig: async (): Promise<DiagnosticsReport> => fallbackDiagnosticsReport(),
       stopGatewayAndRestoreCodex: async (): Promise<DiagnosticsReport> => {
         fallbackGatewayRunning = false;
+        fallbackRouteSettingsState = { ...fallbackRouteSettingsState, enabled: false, disabledExplicitly: true };
+        fallbackDirectSessionTarget = undefined;
         return fallbackDiagnosticsReport();
       },
       prepareUninstall: async (): Promise<DiagnosticsReport> => {
         fallbackGatewayRunning = false;
+        fallbackDirectSessionTarget = undefined;
         fallbackRouteSettingsState = { ...fallbackRouteSettingsState, enabled: false, autoStart: false, disabledExplicitly: true };
         return fallbackDiagnosticsReport();
       },
@@ -278,7 +297,7 @@ function fallbackUsageStats(page: number, pageSize: number): UsageStatsSnapshot 
 
 function fallbackGatewayStatus(): GatewayStatus {
   const currentProvider = fallbackCurrentProvider();
-  if (fallbackRouteSettingsState.mode === 'direct_provider' && !fallbackDirectSessionTarget) {
+  if (fallbackRouteSettingsState.mode === 'direct_provider' && fallbackRouteSettingsState.enabled && !fallbackDirectSessionTarget) {
     fallbackDirectSessionTarget = fallbackDirectTargetForProvider(currentProvider);
   }
   const status: GatewayStatus = {

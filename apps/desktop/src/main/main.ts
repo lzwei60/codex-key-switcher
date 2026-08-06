@@ -32,6 +32,7 @@ import {
   ProviderService,
   UsageService,
   directSessionTargetForProvider,
+  planRouteSettingsChange,
   providerSelectedDisplayModel,
   providerSelectedModel,
 } from '@codex-key-switcher/core';
@@ -1169,8 +1170,15 @@ async function quitApplication(): Promise<void> {
 async function stopGatewayForQuit(): Promise<{ mode: ConnectionMode; restored: boolean; error: string | null }> {
   try {
     const routeSettings = await getRouteSettings();
+    if (!routeSettings.enabled) {
+      await getLocalGatewayRuntime().stop().catch(() => undefined);
+      if (routeSettings.mode === 'direct_provider') await clearDirectSessionTarget();
+      gatewayStatusCache = await currentConnectionStatus(routeSettings);
+      return { mode: routeSettings.mode, restored: false, error: null };
+    }
+
     const restoreManagedBackup = true;
-    await stopGateway({ strictRestore: restoreManagedBackup, restoreManagedBackup });
+    await stopGateway({ strictRestore: restoreManagedBackup, restoreManagedBackup, persistDisabled: false });
     return { mode: routeSettings.mode, restored: restoreManagedBackup, error: null };
   } catch (error) {
     await getLocalGatewayRuntime().stop().catch(() => undefined);
@@ -1237,6 +1245,7 @@ async function getRouteSettings(): Promise<RouteSettings> {
 async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSaveResult> {
   const previousSettings = await getRouteSettings();
   const normalized = normalizeRouteSettings(input);
+  const changePlan = planRouteSettingsChange(previousSettings, normalized);
   if (!await confirmConnectionModeSwitch(previousSettings.mode, normalized.mode)) {
     return {
       settings: previousSettings,
@@ -1245,10 +1254,15 @@ async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSav
     };
   }
 
-  if (!normalized.enabled) {
-    await stopConnectionForMode(previousSettings.mode, { strictRestore: true, restoreManagedBackup: true });
+  if (!changePlan.enabledChanged && !changePlan.connectionModeChanged && !changePlan.localGatewayRuntimeChanged && !changePlan.codexConfigChanged) {
     await persistRouteSettings(normalized);
-    gatewayStatusCache = await currentConnectionStatus(await getRouteSettings());
+    gatewayStatusCache = await currentConnectionStatus(normalized);
+    createTray();
+  } else if (!normalized.enabled) {
+    await stopConnectionForMode(previousSettings.mode, { strictRestore: true, restoreManagedBackup: true });
+    if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
+    await persistRouteSettings(normalized);
+    gatewayStatusCache = await currentConnectionStatus(normalized);
     createTray();
   } else if (normalized.mode === 'direct_provider') {
     await assertCurrentProviderSupportsDirectMode();
@@ -1257,28 +1271,30 @@ async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSav
       restoreManagedBackup: previousSettings.mode === 'local_gateway',
     });
     await persistRouteSettings(normalized);
-    await syncCodexDirectProviderConfig();
-    gatewayStatusCache = await currentConnectionStatus(await getRouteSettings());
+    if (changePlan.codexConfigChanged) await syncCodexDirectProviderConfig();
+    gatewayStatusCache = await currentConnectionStatus(normalized);
     createTray();
   } else if (previousSettings.mode === 'direct_provider') {
+    await persistRouteSettings(normalized);
+    if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) await startLocalGatewayWithSettings(normalized);
+    if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
+  } else if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) {
     await startLocalGatewayWithSettings(normalized);
     await persistRouteSettings(normalized);
-    await syncCodexLocalGatewayConfig(gatewayStatusCache);
-  } else if (!previousSettings.enabled || !gatewayStatusCache.running) {
-    await startLocalGatewayWithSettings(normalized);
-    await persistRouteSettings(normalized);
-    await syncCodexLocalGatewayConfig(gatewayStatusCache);
-  } else if (gatewayStatusCache.running) {
-    await restartLocalGatewayWithSettings(normalized);
-    await persistRouteSettings(normalized);
-    await syncCodexLocalGatewayConfig(gatewayStatusCache);
+    if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
   } else {
     await persistRouteSettings(normalized);
+    if (gatewayStatusCache.running) gatewayStatusCache = await getLocalGatewayRuntime().status();
+    gatewayStatusCache = {
+      ...gatewayStatusCache,
+      mode: normalized.mode,
+    };
+    createTray();
   }
 
   return {
     settings: normalized,
-    changed: !routeSettingsEqual(previousSettings, normalized),
+    changed: changePlan.changed,
     cancelled: false,
   };
 }
@@ -1344,17 +1360,6 @@ async function assertProviderSupportsDirectMode(provider: Provider): Promise<voi
 
 function safeRoutePort(port: number): number {
   return Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : defaultRouteSettings().listenPort;
-}
-
-function routeSettingsEqual(left: RouteSettings, right: RouteSettings): boolean {
-  return left.mode === right.mode
-    && left.enabled === right.enabled
-    && left.autoStart === right.autoStart
-    && left.disabledExplicitly === right.disabledExplicitly
-    && left.listenAddress === right.listenAddress
-    && left.listenPort === right.listenPort
-    && left.allowLANListen === right.allowLANListen
-    && left.failoverEnabled === right.failoverEnabled;
 }
 
 async function checkRoutePort(input: Pick<RouteSettings, 'listenAddress' | 'listenPort' | 'allowLANListen'>): Promise<PortCheckResult> {
@@ -1503,26 +1508,24 @@ async function applyEnabledConnectionMode(routeSettings: RouteSettings): Promise
   return startGateway();
 }
 
-async function restartLocalGatewayWithSettings(settings: RouteSettings): Promise<GatewayStatus> {
-  await getLocalGatewayRuntime().stop().catch(() => undefined);
-  return startLocalGatewayWithSettings(settings);
-}
-
-async function stopGateway(options: { strictRestore?: boolean; restoreManagedBackup?: boolean } = {}): Promise<GatewayStatus> {
+async function stopGateway(options: { strictRestore?: boolean; restoreManagedBackup?: boolean; persistDisabled?: boolean } = {}): Promise<GatewayStatus> {
   const previousSettings = await getRouteSettings();
   const shouldRestoreBackup = options.restoreManagedBackup ?? true;
+  const shouldPersistDisabled = options.persistDisabled ?? true;
   const stopOptions: { strictRestore?: boolean; restoreManagedBackup?: boolean } = {
     restoreManagedBackup: shouldRestoreBackup,
   };
   if (options.strictRestore !== undefined) stopOptions.strictRestore = options.strictRestore;
   else stopOptions.strictRestore = shouldRestoreBackup;
   await stopConnectionForMode(previousSettings.mode, stopOptions);
-  const stoppedSettings = {
-    ...previousSettings,
-    enabled: false,
-    disabledExplicitly: true,
-  };
-  await persistRouteSettings(stoppedSettings);
+  const stoppedSettings = shouldPersistDisabled
+    ? {
+        ...previousSettings,
+        enabled: false,
+        disabledExplicitly: true,
+      }
+    : previousSettings;
+  if (shouldPersistDisabled) await persistRouteSettings(stoppedSettings);
   if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
   gatewayStatusCache = await currentConnectionStatus(stoppedSettings);
   createTray();

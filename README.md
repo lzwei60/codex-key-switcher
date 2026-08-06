@@ -6,7 +6,7 @@ Codex Key Switcher is a cross-platform desktop application for managing Codex-co
 
 The project is built with TypeScript, Next.js, Electron, and shared workspace packages. It keeps product logic testable, platform integrations isolated, and the renderer free from direct access to local secrets.
 
-Current stable version: `v1.0.0`.
+Current stable version: `v1.0.1`.
 
 ## Features
 
@@ -82,13 +82,13 @@ Platform-specific package commands are available in `apps/desktop/package.json`.
 
 The desktop app supports manual update checks through GitHub Releases. Because current installers are unsigned, the app opens the matching installer download page instead of downloading and running installers automatically.
 
-`v1.0.0` is the current stable release. The GitHub Release tag should be `v1.0.0`; the application and installer version should be `1.0.0`.
+`v1.0.1` is the current stable release. The GitHub Release tag should be `v1.0.1`; the application and installer version should be `1.0.1`.
 
 Required release assets:
 
-- `Codex-Key-Switcher-1.0.0-arm64.dmg` for macOS Apple Silicon.
-- `Codex-Key-Switcher-1.0.0-x64.dmg` for macOS Intel.
-- `Codex-Key-Switcher-Setup-1.0.0-x64.exe` for Windows x64.
+- `Codex-Key-Switcher-1.0.1-arm64.dmg` for macOS Apple Silicon.
+- `Codex-Key-Switcher-1.0.1-x64.dmg` for macOS Intel.
+- `Codex-Key-Switcher-Setup-1.0.1-x64.exe` for Windows x64.
 
 See [Release Process](docs/RELEASE.md) for the full release checklist.
 
