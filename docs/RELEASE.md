@@ -17,7 +17,7 @@ The in-app updater selects the installer by file name. Do not rename release ass
 ## Versioning
 
 1. Update `version` in `apps/desktop/package.json`.
-2. Use a matching Git tag, for example `v1.0.0`.
+2. Use a matching Git tag, for example `v1.0.1`.
 3. The GitHub Release marked as latest must use that same tag.
 
 The update check compares `app.getVersion()` with the latest GitHub Release tag or release name after removing a leading `v`.
@@ -42,7 +42,7 @@ pnpm --filter @codex-key-switcher/desktop dist:mac:x64
 pnpm --filter @codex-key-switcher/desktop dist:win
 ```
 
-4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.0`.
+4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.1`.
 5. Upload the three required assets from the `release/` directory.
 6. Mark the GitHub Release as the latest release.
 7. Install the previous desktop version and verify Settings -> Updates:
@@ -62,6 +62,39 @@ The current project intentionally ships unsigned installers. This means:
 - Release notes should tell users that the installer is unsigned and must be downloaded from this repository's GitHub Releases page.
 
 Signing and notarization should be added before treating this as a production-grade public distribution flow.
+
+## v1.0.1 Release Notes
+
+### Release Scope
+
+`v1.0.1` is a patch release for the `v1.0.0` stable line. It fixes local gateway auto-start persistence, connection-state drift in direct provider mode, unnecessary route restarts, and release/version metadata consistency.
+
+### Fixes and Improvements
+
+- Fixed app startup auto-start for local gateway and direct provider mode. Quitting the app now stops the runtime and restores Codex config without overwriting the saved enabled route setting.
+- Fixed direct provider session state cleanup when direct config is disabled, when diagnostics stops routing, and when preview mode simulates disabled routing.
+- Fixed false restore-failure prompts on quit when routing was already disabled.
+- Reduced unnecessary local gateway restarts and Codex config writes when saving connection settings that only change auto-start or other non-Codex settings.
+- Added a tested route settings change planner so runtime restart and Codex config sync decisions are covered by unit tests.
+- Fixed Web preview fallback version display by deriving the version from the root package through Next config.
+- Fixed Web type checking in clean or concurrent build environments by generating Next route types before running TypeScript.
+
+### Upgrade Notes
+
+- This release keeps existing provider, credential, usage, and route settings.
+- If auto-start was enabled before quitting the app, launching `v1.0.1` will apply the saved route setting again.
+- Existing Codex conversations may continue using old config until a new conversation is opened or Codex is restarted.
+
+### Installers
+
+- macOS Apple Silicon: `Codex-Key-Switcher-1.0.1-arm64.dmg`
+- macOS Intel: `Codex-Key-Switcher-1.0.1-x64.dmg`
+- Windows x64: `Codex-Key-Switcher-Setup-1.0.1-x64.exe`
+
+### Notes
+
+- Installers are still unsigned and not notarized. Download them only from this repository's GitHub Releases page.
+- macOS may show a Gatekeeper warning on first launch. Windows may show a SmartScreen warning on first launch.
 
 ## v1.0.0 Release Notes
 

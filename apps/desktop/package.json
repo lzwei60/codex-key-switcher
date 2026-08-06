@@ -1,6 +1,6 @@
 {
   "name": "@codex-key-switcher/desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cross-platform Codex local gateway provider switcher.",
   "author": "Codex Key Switcher",
   "private": true,
