@@ -440,6 +440,7 @@ function requestBodyByApplyingActiveModel(body: Buffer, provider: Provider, forc
   if (forceStream || payload.stream === true) payload.stream = forceStream;
   removeUnsupportedCodexMetadata(payload);
   normalizeResponsesInputForUpstream(payload);
+  normalizeResponsesToolsForUpstream(payload, provider);
   return jsonBuffer(payload);
 }
 
@@ -853,6 +854,41 @@ function removeUnsupportedCodexMetadata(value: unknown): void {
   delete value.namespace;
   for (const child of Object.values(value)) {
     removeUnsupportedCodexMetadata(child);
+  }
+}
+
+function normalizeResponsesToolsForUpstream(payload: Record<string, unknown>, provider: Provider): void {
+  if (!Array.isArray(payload.tools)) return;
+  if (providerAcceptsHostedResponsesTools(provider)) return;
+
+  const tools = payload.tools.filter((tool) => isResponsesFunctionTool(tool));
+  if (tools.length > 0) {
+    payload.tools = tools;
+    if (isUnsupportedHostedResponsesToolChoice(payload.tool_choice)) {
+      delete payload.tool_choice;
+    }
+  } else {
+    delete payload.tools;
+    delete payload.tool_choice;
+  }
+}
+
+function isResponsesFunctionTool(tool: unknown): boolean {
+  if (!isRecord(tool)) return false;
+  if (isRecord(tool.function)) return true;
+  return stringValue(tool.type) === 'function' && Boolean(stringValue(tool.name));
+}
+
+function isUnsupportedHostedResponsesToolChoice(toolChoice: unknown): boolean {
+  if (!isRecord(toolChoice)) return false;
+  return !isResponsesFunctionTool(toolChoice);
+}
+
+function providerAcceptsHostedResponsesTools(provider: Provider): boolean {
+  try {
+    return new URL(provider.baseURL).hostname === 'api.openai.com';
+  } catch {
+    return false;
   }
 }
 

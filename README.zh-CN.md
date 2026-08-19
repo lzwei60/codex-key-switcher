@@ -6,7 +6,7 @@ Codex Key Switcher 是一个跨平台桌面应用，用于管理 Codex 兼容的
 
 项目基于 TypeScript、Next.js、Electron 和共享 workspace 包构建。整体架构重点关注业务逻辑可测试、平台能力隔离，以及渲染进程不直接接触本地密钥。
 
-当前稳定版本：`v1.0.1`。
+当前稳定版本：`v1.0.2`。
 
 ## 功能特性
 
@@ -82,13 +82,13 @@ pnpm --filter @codex-key-switcher/desktop dist
 
 桌面应用支持通过 GitHub Releases 手动检查更新。由于当前安装包未签名，应用只会打开当前平台匹配的安装包下载页面，不会自动下载安装并执行安装包。
 
-`v1.0.1` 是当前稳定发布版本。Release tag 应使用 `v1.0.1`，应用内版本号和安装包版本号应使用 `1.0.1`。
+`v1.0.2` 是当前稳定发布版本。Release tag 应使用 `v1.0.2`，应用内版本号和安装包版本号应使用 `1.0.2`。
 
 必须上传的 Release 资源：
 
-- `Codex-Key-Switcher-1.0.1-arm64.dmg`，用于 macOS Apple Silicon。
-- `Codex-Key-Switcher-1.0.1-x64.dmg`，用于 macOS Intel。
-- `Codex-Key-Switcher-Setup-1.0.1-x64.exe`，用于 Windows x64。
+- `Codex-Key-Switcher-1.0.2-arm64.dmg`，用于 macOS Apple Silicon。
+- `Codex-Key-Switcher-1.0.2-x64.dmg`，用于 macOS Intel。
+- `Codex-Key-Switcher-Setup-1.0.2-x64.exe`，用于 Windows x64。
 
 完整发布检查清单请查看 [发布流程](docs/RELEASE.zh-CN.md)。
 

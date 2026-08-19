@@ -20,7 +20,7 @@ const fallbackProviders: Provider[] = [
   },
 ];
 
-const fallbackAppVersion = process.env.NEXT_PUBLIC_APP_VERSION || '1.0.1';
+const fallbackAppVersion = process.env.NEXT_PUBLIC_APP_VERSION || '1.0.2';
 
 const fallbackRouteSettings: RouteSettings = {
   mode: 'local_gateway',

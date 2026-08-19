@@ -17,7 +17,7 @@ Codex Key Switcher 通过 GitHub Releases 分发未签名桌面安装包。应�
 ## 版本规则
 
 1. 更新 `apps/desktop/package.json` 中的 `version`。
-2. 使用匹配的 Git tag，例如 `v1.0.1`。
+2. 使用匹配的 Git tag，例如 `v1.0.2`。
 3. GitHub Release 的 latest 版本必须使用同一个 tag。
 
 更新检查会用 `app.getVersion()` 和 GitHub 最新 Release 的 tag 或 release name 对比版本号，并自动去掉开头的 `v`。
@@ -42,7 +42,7 @@ pnpm --filter @codex-key-switcher/desktop dist:mac:x64
 pnpm --filter @codex-key-switcher/desktop dist:win
 ```
 
-4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.1`。
+4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.2`。
 5. 上传 `release/` 目录下的三个安装包资源。
 6. 将该 GitHub Release 标记为 latest。
 7. 安装上一个桌面版本，并验证“设置 -> 更新”：
@@ -62,6 +62,37 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 - Release notes 应明确告知用户安装包未签名，并要求用户只从本仓库 GitHub Releases 页面下载。
 
 在面向正式产品级公开分发前，应补充代码签名和 macOS notarization。
+
+## v1.0.2 Release Notes
+
+### 版本定位
+
+`v1.0.2` 是 `v1.0.1` 稳定版本线的补丁版本。该版本修复第三方 Responses 兼容网关不支持 OpenAI 托管工具类型时，本地路由转发失败的问题，例如 `web_search`。
+
+### 修复与优化
+
+- 修复 Codex 请求经本地路由转发到 `https://api.xiaomimimo.com/v1` 等第三方 Responses 网关时，可能出现 `tool type 'web_search' is not supported by this gateway phase` 的问题。
+- 本地路由现在会在转发给非 OpenAI 上游前过滤不受支持的 Responses 托管工具，同时保留普通 function tools。
+- 当托管工具被过滤时，同步移除对应的不受支持 `tool_choice`，避免上游继续因为参数组合不合法而拒绝请求。
+- OpenAI 官方 Responses API 仍保持托管工具原样透传。
+- 新增单元测试覆盖第三方网关过滤和 OpenAI 透传行为。
+
+### 升级说明
+
+- 本版本保留已有供应商、凭据、用量统计和连接设置。
+- 该修复仅在 Codex 流量经过本地路由模式时生效。直连供应商模式会绕过本地路由，无法改写不受支持的工具 payload。
+- 已打开的 Codex 会话可能继续使用旧配置；如未立即生效，请新开会话或重启 Codex。
+
+### 安装包
+
+- macOS Apple Silicon：`Codex-Key-Switcher-1.0.2-arm64.dmg`
+- macOS Intel：`Codex-Key-Switcher-1.0.2-x64.dmg`
+- Windows x64：`Codex-Key-Switcher-Setup-1.0.2-x64.exe`
+
+### 注意事项
+
+- 当前安装包仍未签名、未 notarize。请只从本仓库 GitHub Releases 页面下载。
+- macOS 首次打开可能出现 Gatekeeper 安全提示；Windows 首次打开可能出现 SmartScreen 提示。
 
 ## v1.0.1 Release Notes
 
