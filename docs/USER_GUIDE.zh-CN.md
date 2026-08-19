@@ -4,13 +4,13 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 
 ## 适用平台
 
-- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.1-arm64.dmg`
-- macOS Intel：使用 `Codex-Key-Switcher-1.0.1-x64.dmg`
-- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.1-x64.exe`
+- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.2-arm64.dmg`
+- macOS Intel：使用 `Codex-Key-Switcher-1.0.2-x64.dmg`
+- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.2-x64.exe`
 
 当前安装包未签名、未 notarize。首次安装时 macOS 或 Windows 可能出现安全提示，这是正常现象。
 
-当前稳定版本为 `v1.0.1`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
+当前稳定版本为 `v1.0.2`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
 
 ## 首次使用
 
