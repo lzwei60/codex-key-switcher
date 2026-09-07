@@ -4,11 +4,13 @@ export interface CodexConfigAdapter {
     endpoint: string;
     localApiKey: string;
     model: string;
+    modelCatalogJSON?: string;
   }): Promise<void>;
   applyDirectProvider(input: {
     baseURL: string;
     apiKey: string;
     model: string;
+    modelCatalogJSON?: string;
   }): Promise<void>;
   restoreManagedBackup(): Promise<void>;
   restoreManagedBackupForDirectory(directory: string): Promise<void>;
@@ -28,11 +30,11 @@ export class CodexConfigService {
   // 应用本地网关配置
   // @param input 包含endpoint、localApiKey和model的对象
   // @returns 返回一个Promise，在配置应用完成后解析
-  applyLocalGateway(input: { endpoint: string; localApiKey: string; model: string }): Promise<void> {
+  applyLocalGateway(input: { endpoint: string; localApiKey: string; model: string; modelCatalogJSON?: string }): Promise<void> {
     return this.adapter.applyLocalGateway(input);
   }
 
-  applyDirectProvider(input: { baseURL: string; apiKey: string; model: string }): Promise<void> {
+  applyDirectProvider(input: { baseURL: string; apiKey: string; model: string; modelCatalogJSON?: string }): Promise<void> {
     return this.adapter.applyDirectProvider(input);
   }
 

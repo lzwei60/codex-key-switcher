@@ -90,7 +90,7 @@ describe('UsageFileRepository', () => {
   it('returns aggregated stats and paginated logs from SQLite', async () => {
     const root = await temporaryRoot();
     const repository = new UsageFileRepository(root);
-    const baseTime = new Date('2026-07-30T10:00:00+08:00').getTime();
+    const baseTime = Date.now() - 2_000;
 
     await repository.record({
       id: 'first',

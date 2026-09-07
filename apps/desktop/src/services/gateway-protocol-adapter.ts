@@ -1,5 +1,7 @@
-import { providerSelectedCatalogModel, providerSelectedModel } from '@codex-key-switcher/core';
+import { providerModelForCatalogModel, providerSelectedCatalogModel, providerSelectedModel } from '@codex-key-switcher/core';
 import type { Provider } from '@codex-key-switcher/shared';
+
+const nonOpenAIUpstreamMinimumOutputTokens = 16;
 
 export interface UpstreamRequestBody {
   body: Buffer;
@@ -378,6 +380,27 @@ export function upstreamRequestBodyFromResponsesBody(body: Buffer, provider: Pro
   };
 }
 
+export function upstreamRequestBodyFromGenericBody(body: Buffer, provider: Provider): UpstreamRequestBody {
+  const payload = jsonObjectFromBody(body);
+  if (!payload) {
+    return {
+      body,
+      upstreamModel: providerSelectedModel(provider)?.model.trim() || providerSelectedCatalogModel(provider),
+      clientWantsStream: false,
+    };
+  }
+
+  const upstreamModel = applyActiveModelToPayload(payload, provider);
+  removeUnsupportedCodexMetadata(payload);
+  normalizeOutputTokenLimitsForUpstream(payload, provider);
+
+  return {
+    body: jsonBuffer(payload),
+    upstreamModel,
+    clientWantsStream: false,
+  };
+}
+
 export function adaptUpstreamResponseToResponses(data: Buffer, provider: Provider, originalPath: string, model: string): AdaptedUpstreamResponse {
   if (originalPath !== '/responses') return { body: data, contentType: 'application/json' };
 
@@ -434,14 +457,22 @@ function requestBodyByApplyingActiveModel(body: Buffer, provider: Provider, forc
   const payload = jsonObjectFromBody(body);
   if (!payload) return body;
 
-  const selectedModel = providerSelectedModel(provider);
-  const upstreamModel = selectedModel?.model.trim() || stringValue(payload.model);
-  if (upstreamModel) payload.model = upstreamModel;
+  applyActiveModelToPayload(payload, provider);
   if (forceStream || payload.stream === true) payload.stream = forceStream;
   removeUnsupportedCodexMetadata(payload);
+  normalizeOutputTokenLimitsForUpstream(payload, provider);
   normalizeResponsesInputForUpstream(payload);
   normalizeResponsesToolsForUpstream(payload, provider);
   return jsonBuffer(payload);
+}
+
+function applyActiveModelToPayload(payload: Record<string, unknown>, provider: Provider): string {
+  const requestedModel = stringValue(payload.model);
+  const selectedModel = (requestedModel ? providerModelForCatalogModel(provider, requestedModel) : null)
+    ?? providerSelectedModel(provider);
+  const upstreamModel = selectedModel?.model.trim() || requestedModel || providerSelectedCatalogModel(provider);
+  if (upstreamModel) payload.model = upstreamModel;
+  return upstreamModel;
 }
 
 function chatCompletionsBodyFromResponsesBody(body: Buffer, provider: Provider, stream: boolean): Buffer {
@@ -855,6 +886,19 @@ function removeUnsupportedCodexMetadata(value: unknown): void {
   for (const child of Object.values(value)) {
     removeUnsupportedCodexMetadata(child);
   }
+}
+
+function normalizeOutputTokenLimitsForUpstream(payload: Record<string, unknown>, provider: Provider): void {
+  if (providerAcceptsHostedResponsesTools(provider)) return;
+  clampOutputTokenLimit(payload, 'max_output_tokens');
+  clampOutputTokenLimit(payload, 'max_tokens');
+}
+
+function clampOutputTokenLimit(payload: Record<string, unknown>, key: 'max_output_tokens' | 'max_tokens'): void {
+  const value = payload[key];
+  if (typeof value !== 'number' || !Number.isFinite(value)) return;
+  if (value >= nonOpenAIUpstreamMinimumOutputTokens) return;
+  payload[key] = nonOpenAIUpstreamMinimumOutputTokens;
 }
 
 function normalizeResponsesToolsForUpstream(payload: Record<string, unknown>, provider: Provider): void {

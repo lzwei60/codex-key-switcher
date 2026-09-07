@@ -11,13 +11,14 @@ Every public release must upload these installer assets:
 | macOS Apple Silicon | `pnpm --filter @codex-key-switcher/desktop dist:mac:arm64` | `Codex-Key-Switcher-<version>-arm64.dmg` |
 | macOS Intel | `pnpm --filter @codex-key-switcher/desktop dist:mac:x64` | `Codex-Key-Switcher-<version>-x64.dmg` |
 | Windows x64 | `pnpm --filter @codex-key-switcher/desktop dist:win` | `Codex-Key-Switcher-Setup-<version>-x64.exe` |
+| Linux x64 | `pnpm --filter @codex-key-switcher/desktop dist:linux` | `Codex-Key-Switcher-<version>-x86_64.AppImage` and `Codex-Key-Switcher-<version>-amd64.deb` |
 
 The in-app updater selects the installer by file name. Do not rename release assets unless the matching logic in `apps/desktop/src/main/main.ts` is updated in the same release.
 
 ## Versioning
 
 1. Update `version` in `apps/desktop/package.json`.
-2. Use a matching Git tag, for example `v1.0.2`.
+2. Use a matching Git tag, for example `v1.0.3`.
 3. The GitHub Release marked as latest must use that same tag.
 
 The update check compares `app.getVersion()` with the latest GitHub Release tag or release name after removing a leading `v`.
@@ -40,10 +41,11 @@ pnpm build
 pnpm --filter @codex-key-switcher/desktop dist:mac:arm64
 pnpm --filter @codex-key-switcher/desktop dist:mac:x64
 pnpm --filter @codex-key-switcher/desktop dist:win
+pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.2`.
-5. Upload the three required assets from the `release/` directory.
+4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.3`.
+5. Upload the four platform asset groups from the `release/` directory.
 6. Mark the GitHub Release as the latest release.
 7. Install the previous desktop version and verify Settings -> Updates:
    - The latest version is detected.
@@ -63,6 +65,42 @@ The current project intentionally ships unsigned installers. This means:
 
 Signing and notarization should be added before treating this as a production-grade public distribution flow.
 
+## v1.0.3 Release Notes
+
+### Release Scope
+
+`v1.0.3` is a hardening and packaging release for the `v1.0.2` stable line. It improves Codex model Catalog synchronization, local gateway safety, file persistence reliability, route rollback behavior, Linux packaging, and release metadata consistency.
+
+### Fixes and Improvements
+
+- Added automatic Codex model Catalog generation so provider models are written through `model_catalog_json` and stay aligned with the active connection mode.
+- Added stable local-gateway model slugs with collision handling and reverse mapping back to upstream model names.
+- Hardened local gateway authorization, request-size handling, client disconnect handling, streaming response cleanup, and listen-address normalization.
+- Switched local JSON/config writes to atomic writes with stricter POSIX permissions for Codex config, auth, backups, and app data files.
+- Added rollback behavior when provider saves or route setting changes fail after partial persistence.
+- Added Electron single-instance protection so repeated launches focus the existing window instead of starting competing gateway/config writers.
+- Added Linux x64 AppImage/deb packaging support and update-asset matching.
+- Expanded tests for model Catalog generation, model slug mapping/collisions, gateway protocol adaptation, config backup/restore behavior, and provider persistence rollback.
+
+### Upgrade Notes
+
+- This release keeps existing provider, credential, usage, and route settings.
+- After switching provider, model, or connection mode, fully quit and restart Codex so it reloads the generated model Catalog and connection configuration.
+- Local gateway mode now defaults to loopback-only listening unless LAN listening is explicitly enabled.
+- Installers are still unsigned and not notarized. Download them only from this repository's GitHub Releases page.
+
+### Installers
+
+- macOS Apple Silicon: `Codex-Key-Switcher-1.0.3-arm64.dmg`
+- macOS Intel: `Codex-Key-Switcher-1.0.3-x64.dmg`
+- Windows x64: `Codex-Key-Switcher-Setup-1.0.3-x64.exe`
+- Linux x64: `Codex-Key-Switcher-1.0.3-x86_64.AppImage` and `Codex-Key-Switcher-1.0.3-amd64.deb`
+
+### Notes
+
+- macOS may show a Gatekeeper warning on first launch. Windows may show a SmartScreen warning on first launch.
+- Windows and Linux cross-platform installers should be smoke-tested on their target operating systems before public distribution.
+
 ## v1.0.2 Release Notes
 
 ### Release Scope
@@ -81,13 +119,14 @@ Signing and notarization should be added before treating this as a production-gr
 
 - This release keeps existing provider, credential, usage, and route settings.
 - The fix applies when Codex traffic goes through local gateway mode. Direct provider mode bypasses the local gateway and cannot rewrite unsupported tool payloads.
-- Existing Codex conversations may continue using old config until a new conversation is opened or Codex is restarted.
+- The model Catalog and Codex configuration are loaded at Codex startup. After switching provider, model, or connection mode, fully quit and restart Codex.
 
 ### Installers
 
 - macOS Apple Silicon: `Codex-Key-Switcher-1.0.2-arm64.dmg`
 - macOS Intel: `Codex-Key-Switcher-1.0.2-x64.dmg`
 - Windows x64: `Codex-Key-Switcher-Setup-1.0.2-x64.exe`
+- Linux x64: `Codex-Key-Switcher-1.0.2-x64.AppImage` and/or `.deb`
 
 ### Notes
 

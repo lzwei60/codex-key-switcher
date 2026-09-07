@@ -5,6 +5,8 @@ type SettingsPayload = Record<string, string | number | boolean>;
 
 export class AppSettingsStore {
   private loaded = false;
+  private loading: Promise<void> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
   private values: SettingsPayload = {};
   private readonly filePath: string;
 
@@ -21,7 +23,7 @@ export class AppSettingsStore {
   async setString(key: string, value: string): Promise<void> {
     await this.load();
     this.values[key] = value;
-    await this.persist();
+    await this.enqueuePersist();
   }
 
   async getBoolean(key: string): Promise<boolean | null> {
@@ -33,7 +35,7 @@ export class AppSettingsStore {
   async setBoolean(key: string, value: boolean): Promise<void> {
     await this.load();
     this.values[key] = value;
-    await this.persist();
+    await this.enqueuePersist();
   }
 
   async getNumber(key: string): Promise<number | null> {
@@ -45,16 +47,23 @@ export class AppSettingsStore {
   async setNumber(key: string, value: number): Promise<void> {
     await this.load();
     this.values[key] = value;
-    await this.persist();
+    await this.enqueuePersist();
   }
 
   private async load(): Promise<void> {
     if (this.loaded) return;
-    this.values = await readJsonFile<SettingsPayload>(this.filePath, {});
-    this.loaded = true;
+    this.loading ??= readJsonFile<SettingsPayload>(this.filePath, {}).then((values) => {
+      this.values = values;
+      this.loaded = true;
+    });
+    await this.loading;
   }
 
-  private async persist(): Promise<void> {
-    await writeJsonFile(this.filePath, this.values);
+  private enqueuePersist(): Promise<void> {
+    const nextWrite = this.writeQueue
+      .catch(() => undefined)
+      .then(() => writeJsonFile(this.filePath, this.values));
+    this.writeQueue = nextWrite;
+    return nextWrite;
   }
 }

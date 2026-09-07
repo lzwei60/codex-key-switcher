@@ -12,6 +12,8 @@ export class ProviderFileRepository implements ProviderRepository {
   private providers: Provider[] = [];
   private currentId: string | null = null;
   private loaded = false;
+  private loading: Promise<void> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
   private readonly filePath: string;
 
   constructor(private readonly dataDirectory: string) {
@@ -59,15 +61,16 @@ export class ProviderFileRepository implements ProviderRepository {
 
   private async load(): Promise<void> {
     if (this.loaded) return;
-
-    const payload = await readJsonFile<ProviderFilePayload>(this.filePath, {});
-    this.providers = Array.isArray(payload.providers) ? payload.providers.filter(isProviderLike) : [];
-    this.currentId = typeof payload.currentId === 'string' && payload.currentId.trim()
-      ? payload.currentId.trim()
-      : null;
-    this.repairCurrentProviderSelection();
-    this.sortProviders();
-    this.loaded = true;
+    this.loading ??= readJsonFile<ProviderFilePayload>(this.filePath, {}).then((payload) => {
+      this.providers = Array.isArray(payload.providers) ? payload.providers.filter(isProviderLike) : [];
+      this.currentId = typeof payload.currentId === 'string' && payload.currentId.trim()
+        ? payload.currentId.trim()
+        : null;
+      this.repairCurrentProviderSelection();
+      this.sortProviders();
+      this.loaded = true;
+    });
+    await this.loading;
   }
 
   private repairCurrentProviderSelection(): void {
@@ -84,10 +87,15 @@ export class ProviderFileRepository implements ProviderRepository {
   }
 
   private async persist(): Promise<void> {
-    await writeJsonFile(this.filePath, {
+    const payload = {
       providers: this.providers,
       currentId: this.currentId ?? '',
-    });
+    };
+    const nextWrite = this.writeQueue
+      .catch(() => undefined)
+      .then(() => writeJsonFile(this.filePath, payload));
+    this.writeQueue = nextWrite;
+    await nextWrite;
   }
 }
 

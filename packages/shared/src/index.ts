@@ -111,7 +111,7 @@ export interface CodexConfigDirectorySettings {
   isDefault: boolean;
 }
 
-export type AppUpdatePlatformKey = 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'unsupported';
+export type AppUpdatePlatformKey = 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'linux-x64' | 'unsupported';
 
 export type AppUpdateStatus = 'available' | 'not-available' | 'not-configured' | 'unsupported-platform' | 'error';
 

@@ -11,13 +11,14 @@ Codex Key Switcher 通过 GitHub Releases 分发未签名桌面安装包。应�
 | macOS Apple Silicon | `pnpm --filter @codex-key-switcher/desktop dist:mac:arm64` | `Codex-Key-Switcher-<version>-arm64.dmg` |
 | macOS Intel | `pnpm --filter @codex-key-switcher/desktop dist:mac:x64` | `Codex-Key-Switcher-<version>-x64.dmg` |
 | Windows x64 | `pnpm --filter @codex-key-switcher/desktop dist:win` | `Codex-Key-Switcher-Setup-<version>-x64.exe` |
+| Linux x64 | `pnpm --filter @codex-key-switcher/desktop dist:linux` | `Codex-Key-Switcher-<version>-x86_64.AppImage` 和 `Codex-Key-Switcher-<version>-amd64.deb` |
 
 应用内更新功能会根据文件名选择安装包。除非同一个版本同步修改 `apps/desktop/src/main/main.ts` 中的匹配逻辑，否则不要手动重命名 Release 资源。
 
 ## 版本规则
 
 1. 更新 `apps/desktop/package.json` 中的 `version`。
-2. 使用匹配的 Git tag，例如 `v1.0.2`。
+2. 使用匹配的 Git tag，例如 `v1.0.3`。
 3. GitHub Release 的 latest 版本必须使用同一个 tag。
 
 更新检查会用 `app.getVersion()` 和 GitHub 最新 Release 的 tag 或 release name 对比版本号，并自动去掉开头的 `v`。
@@ -34,16 +35,17 @@ pnpm test
 pnpm build
 ```
 
-3. 构建三个平台安装包：
+3. 构建所有支持平台安装包：
 
 ```bash
 pnpm --filter @codex-key-switcher/desktop dist:mac:arm64
 pnpm --filter @codex-key-switcher/desktop dist:mac:x64
 pnpm --filter @codex-key-switcher/desktop dist:win
+pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.2`。
-5. 上传 `release/` 目录下的三个安装包资源。
+4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.3`。
+5. 上传 `release/` 目录下的四个平台安装包资源组。
 6. 将该 GitHub Release 标记为 latest。
 7. 安装上一个桌面版本，并验证“设置 -> 更新”：
    - 能检测到最新版本。
@@ -63,6 +65,42 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 
 在面向正式产品级公开分发前，应补充代码签名和 macOS notarization。
 
+## v1.0.3 Release Notes
+
+### 版本定位
+
+`v1.0.3` 是基于 `v1.0.2` 稳定版本线的安全加固与打包版本。该版本重点改进 Codex 模型 Catalog 同步、本地网关安全、文件持久化可靠性、连接设置回滚、Linux 打包和发布元数据一致性。
+
+### 修复与优化
+
+- 新增 Codex 模型 Catalog 自动生成能力，通过 `model_catalog_json` 写入当前供应商模型，并与当前连接模式保持一致。
+- 新增本地路由模型稳定 slug、冲突处理和到真实上游模型名的反向映射。
+- 加固本地网关授权、请求体大小限制、客户端断开处理、流式响应清理和监听地址收敛逻辑。
+- 本地 JSON 和 Codex 配置写入改为原子写入，并为 Codex 配置、认证文件、备份和应用数据文件设置更严格的 POSIX 权限。
+- 供应商保存或连接设置变更发生部分持久化失败时，会自动尝试回滚旧状态。
+- 新增 Electron 单实例保护，重复启动时聚焦已有窗口，避免多个实例竞争写入网关和 Codex 配置。
+- 新增 Linux x64 AppImage/deb 打包支持和更新安装包匹配逻辑。
+- 扩展模型 Catalog、模型 slug 映射与冲突、网关协议适配、配置备份恢复和供应商持久化回滚测试。
+
+### 升级说明
+
+- 本版本保留已有供应商、凭据、用量统计和连接设置。
+- 切换供应商、模型或连接模式后，需要完全退出并重启 Codex，使其重新加载生成的模型 Catalog 和连接配置。
+- 本地路由默认只监听本机回环地址；只有显式开启局域网监听时才允许对外监听。
+- 当前安装包仍未签名、未 notarize。请只从本仓库 GitHub Releases 页面下载。
+
+### 安装包
+
+- macOS Apple Silicon：`Codex-Key-Switcher-1.0.3-arm64.dmg`
+- macOS Intel：`Codex-Key-Switcher-1.0.3-x64.dmg`
+- Windows x64：`Codex-Key-Switcher-Setup-1.0.3-x64.exe`
+- Linux x64：`Codex-Key-Switcher-1.0.3-x86_64.AppImage` 和 `Codex-Key-Switcher-1.0.3-amd64.deb`
+
+### 注意事项
+
+- macOS 首次打开可能出现 Gatekeeper 安全提示；Windows 首次打开可能出现 SmartScreen 提示。
+- Windows 和 Linux 跨平台安装包在公开发布前，应在对应目标系统上做启动冒烟验证。
+
 ## v1.0.2 Release Notes
 
 ### 版本定位
@@ -81,13 +119,14 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 
 - 本版本保留已有供应商、凭据、用量统计和连接设置。
 - 该修复仅在 Codex 流量经过本地路由模式时生效。直连供应商模式会绕过本地路由，无法改写不受支持的工具 payload。
-- 已打开的 Codex 会话可能继续使用旧配置；如未立即生效，请新开会话或重启 Codex。
+- 模型 Catalog 和 Codex 配置会在 Codex 启动时加载。切换供应商、模型或连接模式后，必须完全退出并重启 Codex。
 
 ### 安装包
 
 - macOS Apple Silicon：`Codex-Key-Switcher-1.0.2-arm64.dmg`
 - macOS Intel：`Codex-Key-Switcher-1.0.2-x64.dmg`
 - Windows x64：`Codex-Key-Switcher-Setup-1.0.2-x64.exe`
+- Linux x64：`Codex-Key-Switcher-1.0.2-x64.AppImage` 和/或 `.deb`
 
 ### 注意事项
 

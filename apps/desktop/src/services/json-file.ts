@@ -20,18 +20,22 @@ export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T>
 }
 
 export async function writeJsonFile(filePath: string, value: unknown, mode = 0o600): Promise<void> {
+  await writeTextFile(filePath, `${JSON.stringify(value, null, 2)}\n`, mode);
+}
+
+export async function writeTextFile(filePath: string, data: string, mode = 0o600): Promise<void> {
   const directory = path.dirname(filePath);
   await ensurePrivateDirectory(directory);
 
   const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  const data = `${JSON.stringify(value, null, 2)}\n`;
   await fs.writeFile(temporaryPath, data, { encoding: 'utf8', mode });
   await chmodIfSupported(temporaryPath, mode);
   try {
     await ensurePrivateDirectory(directory);
     await fs.rename(temporaryPath, filePath);
   } catch (error) {
-    if (!isMissingFileError(error)) throw error;
+    if (!isMissingFileError(error) && !isWindowsRenameConflict(error)) throw error;
+    if (process.platform === 'win32') await fs.rm(filePath, { force: true });
     await ensurePrivateDirectory(directory);
     await fs.writeFile(filePath, data, { encoding: 'utf8', mode });
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -41,6 +45,11 @@ export async function writeJsonFile(filePath: string, value: unknown, mode = 0o6
 
 function isMissingFileError(error: unknown): boolean {
   return Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT');
+}
+
+function isWindowsRenameConflict(error: unknown): boolean {
+  if (process.platform !== 'win32' || !error || typeof error !== 'object' || !('code' in error)) return false;
+  return error.code === 'EEXIST' || error.code === 'EPERM';
 }
 
 async function chmodIfSupported(filePath: string, mode: number): Promise<void> {

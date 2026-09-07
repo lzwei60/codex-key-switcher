@@ -5,6 +5,7 @@ import type {
   ProviderInput,
   ProviderModel,
 } from '@codex-key-switcher/shared';
+import { providerCatalogSlug } from './provider-models';
 
 export interface ProviderRepository {
   list(): Promise<Provider[]>;
@@ -93,26 +94,51 @@ export class ProviderService {
     const provider = this.normalize(input, existing ?? null);
 
     const apiKey = input.apiKey?.trim();
-    if (apiKey) {
-      await this.credentials.set(provider.id, apiKey);
-      provider.keyPreview = maskApiKey(apiKey);
-    } else if (!existing) {
+    if (!apiKey && !existing) {
       throw new Error('新增配置必须填写 API Key。');
     }
 
-    await this.hydrateKeyPreview(provider);
-    if (!await this.currentApiKey(provider)) {
-      throw new Error('该配置缺少本地 API Key。');
-    }
+    const previousApiKey = existing && apiKey ? await this.currentApiKey(existing) : null;
+    let credentialChanged = false;
+    let repositoryMutationStarted = false;
+    try {
+      if (apiKey) {
+        await this.credentials.set(provider.id, apiKey);
+        credentialChanged = true;
+        provider.keyPreview = maskApiKey(apiKey);
+      }
 
+      await this.hydrateKeyPreview(provider);
+      if (!await this.currentApiKey(provider)) {
+        throw new Error('该配置缺少本地 API Key。');
+      }
+
+      repositoryMutationStarted = true;
+      await this.repository.save(provider);
+
+      const currentId = await this.repository.getCurrentId();
+      if (!currentId) {
+        await this.repository.setCurrentId(provider.id);
+      }
+
+      return provider;
+    } catch (error) {
+      if (repositoryMutationStarted) {
+        if (existing) await this.repository.save(existing).catch(() => undefined);
+        else await this.repository.delete(provider.id).catch(() => undefined);
+      }
+      if (credentialChanged) {
+        if (previousApiKey) await this.credentials.set(provider.id, previousApiKey).catch(() => undefined);
+        else await this.credentials.delete(provider.id).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
+  async restore(provider: Provider, apiKey: string | null): Promise<void> {
+    if (apiKey) await this.credentials.set(provider.id, apiKey);
+    else await this.credentials.delete(provider.id);
     await this.repository.save(provider);
-
-    const currentId = await this.repository.getCurrentId();
-    if (!currentId) {
-      await this.repository.setCurrentId(provider.id);
-    }
-
-    return provider;
   }
 
   async setCurrent(providerId: string): Promise<void> {
@@ -237,6 +263,17 @@ export class ProviderService {
 
     const duplicatedModel = findDuplicate(models.map((model) => model.customName));
     if (duplicatedModel) throw new Error(`模型自定义名称重复：${duplicatedModel}`);
+
+    const duplicatedCatalogSlug = findDuplicate(models.map((model) => providerCatalogSlug({
+      id: input.id?.trim() || existing?.id || '',
+      name,
+      baseURL,
+      apiFormat: input.apiFormat,
+      models,
+      selectedModel: '',
+      updatedAt: 0,
+    }, model)));
+    if (duplicatedCatalogSlug) throw new Error(`模型 Catalog 标识重复：${duplicatedCatalogSlug}`);
 
     const selectedModel = selectedModelName(models, input.selectedModel?.trim() || '') || models[0]?.customName || models[0]?.model;
     if (!selectedModel) throw new Error('请选择模型。');

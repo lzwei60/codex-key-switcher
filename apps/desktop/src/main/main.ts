@@ -33,6 +33,7 @@ import {
   UsageService,
   directSessionTargetForProvider,
   planRouteSettingsChange,
+  providerSelectedCatalogModel,
   providerSelectedDisplayModel,
   providerSelectedModel,
 } from '@codex-key-switcher/core';
@@ -40,14 +41,17 @@ import { AppSettingsStore } from '../services/app-settings-store';
 import { CodexFileConfigAdapter } from '../services/codex-file-config-adapter';
 import { CredentialFileStore } from '../services/credential-file-store';
 import { LocalGatewayRuntime } from '../services/local-gateway-runtime';
+import { ModelCatalogService } from '../services/model-catalog-service';
 import { ProviderFileRepository } from '../services/provider-file-repository';
 import { UsageFileRepository } from '../services/usage-file-repository';
+import { writeTextFile } from '../services/json-file';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
 const releaseApiUrl = 'https://api.github.com/repos/lzwei60/codex-key-switcher/releases/latest';
 const releaseLatestPageUrl = 'https://github.com/lzwei60/codex-key-switcher/releases/latest';
 const releaseBaseUrl = 'https://github.com/lzwei60/codex-key-switcher';
+const providerValidationOutputTokenBudget = 16;
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -57,6 +61,7 @@ let providerService: ProviderService | null = null;
 let codexConfigService: CodexConfigService | null = null;
 let usageService: UsageService | null = null;
 let localGatewayRuntime: LocalGatewayRuntime | null = null;
+let modelCatalogService: ModelCatalogService | null = null;
 let isQuitting = false;
 let quitFlowStarted = false;
 let gatewayStatusCache: GatewayStatus = {
@@ -68,6 +73,12 @@ let gatewayStatusCache: GatewayStatus = {
 };
 
 const directSessionTargetKey = 'directSessionTarget';
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) app.quit();
+else app.on('second-instance', () => {
+  void createWindow();
+});
 
 async function createWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -290,7 +301,7 @@ function directSwitchDetail(input: {
   nextProvider: Provider | null | undefined;
 }): string {
   if (!input.isDirectMode) {
-    return '已有 Codex 会话可能继续使用旧上下文。建议打开一个新会话以确保新配置立即生效。';
+    return '模型 UI 列表已更新到配置文件。请重启 Codex 以加载新的模型列表；重启后已有会话不会继续运行。';
   }
 
   const target = input.nextProvider
@@ -298,10 +309,10 @@ function directSwitchDetail(input: {
     : '新供应商配置';
 
   if (input.providerChanged) {
-    return `直连模式已写入「${target}」。请在 Codex 新开会话；如果新会话仍未生效，再重启 Codex。`;
+    return `直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和直连配置。`;
   }
 
-  return `直连模式已写入「${target}」。请在 Codex 新开会话以使用新模型，当前已运行会话可能仍使用旧模型。`;
+  return `直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和默认模型。`;
 }
 
 async function notifyTrayProviderSwitchFailure(providerId: string, error: unknown): Promise<void> {
@@ -411,21 +422,21 @@ async function notifyFirstProviderRouteAppliedIfNeeded(hadProviders: boolean): P
   if (routeSettings.mode === 'direct_provider') {
     showRouteAppliedRestartMessage({
       message: '首次配置已添加，直连供应商配置已写入 Codex。',
-      detail: 'Codex 可能缓存配置。通常新开会话即可生效；如仍未生效，请重启 Codex。',
+      detail: '模型 UI 和直连配置在 Codex 启动时加载，请完全退出并重启 Codex。',
     });
     return;
   }
 
   showRouteAppliedRestartMessage({
     message: '首次配置已添加，本地路由已写入 Codex 配置。',
-    detail: '因为 Codex 在启动时读取配置，首次从无配置切换到本地路由后，需要重启 Codex，或关闭当前会话后打开新会话，才能使用新的供应商和模型。',
+    detail: '模型 UI 和路由配置在 Codex 启动时加载，请完全退出并重启 Codex。',
   });
 }
 
 function showRouteAppliedRestartMessage(input?: { message?: string; detail?: string }): void {
   const title = '需要重启 Codex';
   const message = input?.message ?? '本地路由已重新启用，并已写入 Codex 配置。';
-  const detail = input?.detail ?? '因为 Codex 在启动时读取配置，重新启用本地路由后，需要重启 Codex，或关闭当前会话后打开新会话，才能使用新的路由配置。';
+  const detail = input?.detail ?? '因为 Codex 在启动时读取配置，重新启用连接模式后，请完全退出并重启 Codex。';
 
   if (Notification.isSupported()) {
     new Notification({
@@ -509,10 +520,24 @@ function registerIpcHandlers() {
     const providers = await providerService.list();
     await assertProviderSaveSupportsCurrentMode(input, providers);
     const hadProviders = providers.length > 0;
-    const provider = await getProviderService().upsert(input);
-    await syncCodexForCurrentMode();
-    await notifyFirstProviderRouteAppliedIfNeeded(hadProviders);
-    return provider;
+    const previous = input.id?.trim()
+      ? providers.find((item) => item.id === input.id?.trim()) ?? null
+      : null;
+    const previousApiKey = previous ? await providerService.currentApiKey(previous) : null;
+    const provider = await providerService.upsert(input);
+    try {
+      await syncCodexForCurrentMode();
+      await notifyFirstProviderRouteAppliedIfNeeded(hadProviders);
+      return provider;
+    } catch (error) {
+      if (previous) {
+        await providerService.restore(previous, previousApiKey).catch(() => undefined);
+      } else {
+        await providerService.delete(provider.id).catch(() => undefined);
+      }
+      await syncCodexForCurrentMode().catch(() => undefined);
+      throw error;
+    }
   });
   ipcMain.handle('providers:delete', async (_event, id: string) => {
     await getProviderService().delete(id);
@@ -808,6 +833,7 @@ function updatePlatformKey(): AppUpdatePlatformKey {
   if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64';
   if (process.platform === 'darwin' && process.arch === 'x64') return 'darwin-x64';
   if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64';
+  if (process.platform === 'linux' && process.arch === 'x64') return 'linux-x64';
   return 'unsupported';
 }
 
@@ -935,6 +961,7 @@ function selectUpdateAsset(assets: GitHubReleaseAsset[], platform: AppUpdatePlat
     if (platform === 'darwin-arm64') return name.endsWith('.dmg') && (name.includes('arm64') || name.includes('aarch64'));
     if (platform === 'darwin-x64') return name.endsWith('.dmg') && (name.includes('x64') || name.includes('intel') || name.includes('x86_64'));
     if (platform === 'win32-x64') return name.endsWith('.exe') && (name.includes('x64') || name.includes('x86_64'));
+    if (platform === 'linux-x64') return (name.endsWith('.appimage') || name.endsWith('.deb')) && (name.includes('x64') || name.includes('amd64') || name.includes('x86_64'));
     return false;
   });
 
@@ -1113,13 +1140,19 @@ function defaultCodexConfigDirectory(): string {
 
 async function ensureCodexConfigFiles(directory: string): Promise<void> {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') await fs.chmod(directory, 0o700).catch(() => undefined);
   const configPath = path.join(directory, 'config.toml');
   const authPath = path.join(directory, 'auth.json');
-  if (!await fileExists(configPath)) await fs.writeFile(configPath, '', 'utf8');
-  if (!await fileExists(authPath)) await fs.writeFile(authPath, '{}\n', 'utf8');
+  if (!await fileExists(configPath)) await writeTextFile(configPath, '', 0o600);
+  if (!await fileExists(authPath)) await writeTextFile(authPath, '{}\n', 0o600);
+  if (process.platform !== 'win32') {
+    await fs.chmod(configPath, 0o600).catch(() => undefined);
+    await fs.chmod(authPath, 0o600).catch(() => undefined);
+  }
 }
 
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return;
   if (process.platform === 'darwin') app.dock?.hide();
   getProviderService();
   getCodexConfigService();
@@ -1196,7 +1229,7 @@ async function showQuitRestoreMessage(result: { mode: ConnectionMode; restored: 
         type: 'warning',
         title: '退出 Codex Key Switcher',
         message: '连接服务已停止，但 Codex 配置恢复失败。',
-        detail: `${result.error}\n\n请到“诊断”页面执行恢复，或手动运行恢复脚本。恢复完成后需要重启 Codex 或打开新会话。`,
+        detail: `${result.error}\n\n请到“诊断”页面执行恢复，或手动运行恢复脚本。恢复完成后需要完全退出并重启 Codex。`,
         buttons: ['知道了'],
         defaultId: 0,
         noLink: true,
@@ -1254,49 +1287,77 @@ async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSav
     };
   }
 
-  if (!changePlan.enabledChanged && !changePlan.connectionModeChanged && !changePlan.localGatewayRuntimeChanged && !changePlan.codexConfigChanged) {
-    await persistRouteSettings(normalized);
-    gatewayStatusCache = await currentConnectionStatus(normalized);
-    createTray();
-  } else if (!normalized.enabled) {
-    await stopConnectionForMode(previousSettings.mode, { strictRestore: true, restoreManagedBackup: true });
-    if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
-    await persistRouteSettings(normalized);
-    gatewayStatusCache = await currentConnectionStatus(normalized);
-    createTray();
-  } else if (normalized.mode === 'direct_provider') {
-    await assertCurrentProviderSupportsDirectMode();
-    await stopConnectionForMode(previousSettings.mode, {
-      strictRestore: previousSettings.mode === 'local_gateway',
-      restoreManagedBackup: previousSettings.mode === 'local_gateway',
-    });
-    await persistRouteSettings(normalized);
-    if (changePlan.codexConfigChanged) await syncCodexDirectProviderConfig();
-    gatewayStatusCache = await currentConnectionStatus(normalized);
-    createTray();
-  } else if (previousSettings.mode === 'direct_provider') {
-    await persistRouteSettings(normalized);
-    if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) await startLocalGatewayWithSettings(normalized);
-    if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
-  } else if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) {
-    await startLocalGatewayWithSettings(normalized);
-    await persistRouteSettings(normalized);
-    if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
-  } else {
-    await persistRouteSettings(normalized);
-    if (gatewayStatusCache.running) gatewayStatusCache = await getLocalGatewayRuntime().status();
-    gatewayStatusCache = {
-      ...gatewayStatusCache,
-      mode: normalized.mode,
+  try {
+    if (!changePlan.enabledChanged && !changePlan.connectionModeChanged && !changePlan.localGatewayRuntimeChanged && !changePlan.codexConfigChanged) {
+      await persistRouteSettings(normalized);
+      gatewayStatusCache = await currentConnectionStatus(normalized);
+      createTray();
+    } else if (!normalized.enabled) {
+      await stopConnectionForMode(previousSettings.mode, { strictRestore: true, restoreManagedBackup: true });
+      if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
+      await persistRouteSettings(normalized);
+      gatewayStatusCache = await currentConnectionStatus(normalized);
+      createTray();
+    } else if (normalized.mode === 'direct_provider') {
+      await assertCurrentProviderSupportsDirectMode();
+      await stopConnectionForMode(previousSettings.mode, {
+        strictRestore: previousSettings.mode === 'local_gateway',
+        restoreManagedBackup: previousSettings.mode === 'local_gateway',
+      });
+      await persistRouteSettings(normalized);
+      if (changePlan.codexConfigChanged) await syncCodexDirectProviderConfig();
+      gatewayStatusCache = await currentConnectionStatus(normalized);
+      createTray();
+    } else if (previousSettings.mode === 'direct_provider') {
+      await persistRouteSettings(normalized);
+      if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) await startLocalGatewayWithSettings(normalized);
+      if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
+    } else if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) {
+      await startLocalGatewayWithSettings(normalized);
+      await persistRouteSettings(normalized);
+      if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
+    } else {
+      await persistRouteSettings(normalized);
+      if (gatewayStatusCache.running) gatewayStatusCache = await getLocalGatewayRuntime().status();
+      gatewayStatusCache = {
+        ...gatewayStatusCache,
+        mode: normalized.mode,
+      };
+      createTray();
+    }
+
+    return {
+      settings: normalized,
+      changed: changePlan.changed,
+      cancelled: false,
     };
+  } catch (error) {
+    await rollbackRouteSettings(previousSettings).catch((rollbackError) => {
+      console.error('Failed to rollback route settings:', rollbackError);
+    });
+    throw error;
+  }
+}
+
+async function rollbackRouteSettings(settings: RouteSettings): Promise<void> {
+  await getLocalGatewayRuntime().stop().catch(() => undefined);
+  await persistRouteSettings(settings);
+  if (!settings.enabled) {
+    if (settings.mode === 'direct_provider') await clearDirectSessionTarget();
+    await getCodexConfigService().restoreManagedBackup().catch(() => undefined);
+    gatewayStatusCache = await currentConnectionStatus(settings);
     createTray();
+    return;
   }
 
-  return {
-    settings: normalized,
-    changed: changePlan.changed,
-    cancelled: false,
-  };
+  if (settings.mode === 'direct_provider') {
+    await syncCodexDirectProviderConfig();
+  } else {
+    await startLocalGatewayWithSettings(settings);
+    await syncCodexLocalGatewayConfig(gatewayStatusCache);
+  }
+  gatewayStatusCache = await currentConnectionStatus(settings);
+  createTray();
 }
 
 async function persistRouteSettings(settingsValue: RouteSettings): Promise<void> {
@@ -1315,16 +1376,22 @@ function normalizeRouteSettings(input: RouteSettings): RouteSettings {
   const defaults = defaultRouteSettings();
   const listenAddress = input.listenAddress?.trim() || defaults.listenAddress;
   const allowLANListen = Boolean(input.allowLANListen);
+  const safeListenAddress = normalizeListenAddress(listenAddress, allowLANListen);
   return {
     mode: normalizeConnectionMode(input.mode),
     enabled: Boolean(input.enabled),
     autoStart: Boolean(input.autoStart),
     disabledExplicitly: Boolean(input.disabledExplicitly),
-    listenAddress: allowLANListen || listenAddress.startsWith('127.') ? listenAddress : defaults.listenAddress,
+    listenAddress: safeListenAddress,
     listenPort: safeRoutePort(input.listenPort),
     allowLANListen,
     failoverEnabled: Boolean(input.failoverEnabled),
   };
+}
+
+function normalizeListenAddress(address: string, allowLANListen: boolean): string {
+  if (address === '127.0.0.1' || address === 'localhost' || address.startsWith('127.')) return address;
+  return allowLANListen ? '0.0.0.0' : '127.0.0.1';
 }
 
 function normalizeConnectionMode(mode: string | null | undefined): ConnectionMode {
@@ -1435,6 +1502,15 @@ function createCodexConfigService(): CodexConfigService {
   return new CodexConfigService(
     new CodexFileConfigAdapter(getAppSettingsStore(), app.getPath('home'), dataDirectory),
   );
+}
+
+function createModelCatalogService(): ModelCatalogService {
+  return new ModelCatalogService(getAppSettingsStore(), app.getPath('home'), app.getPath('userData'));
+}
+
+function getModelCatalogService(): ModelCatalogService {
+  if (!modelCatalogService) modelCatalogService = createModelCatalogService();
+  return modelCatalogService;
 }
 
 function getCodexConfigService(): CodexConfigService {
@@ -1586,11 +1662,13 @@ async function syncCodexForCurrentMode(): Promise<void> {
   if (!currentProvider) return;
 
   const codex = getCodexConfigService();
-  const model = providerSelectedUpstreamModel(currentProvider);
+  const modelCatalogJSON = await getModelCatalogService().writeForProvider(currentProvider, 'local_gateway');
+  const model = providerSelectedCatalogModel(currentProvider);
   await codex.applyLocalGateway({
     endpoint: endpointForRouteSettings(routeSettings),
     localApiKey: await codex.localGatewayAPIKey(),
     model,
+    modelCatalogJSON,
   });
 }
 
@@ -1608,10 +1686,12 @@ async function syncCodexDirectProviderConfig(): Promise<void> {
   const codex = getCodexConfigService();
   const selectedModel = providerSelectedModel(currentProvider);
   const upstreamModel = selectedModel?.model.trim() || currentProvider.selectedModel;
+  const modelCatalogJSON = await getModelCatalogService().writeForProvider(currentProvider, 'direct_provider');
   await codex.applyDirectProvider({
     baseURL: currentProvider.baseURL,
     apiKey,
     model: upstreamModel,
+    modelCatalogJSON,
   });
   await saveDirectSessionTarget(directSessionTargetForProvider(currentProvider));
 }
@@ -1621,12 +1701,14 @@ async function syncCodexLocalGatewayConfig(status: GatewayStatus): Promise<void>
   if (!currentProvider) return;
 
   const codex = getCodexConfigService();
-  const model = providerSelectedUpstreamModel(currentProvider);
+  const modelCatalogJSON = await getModelCatalogService().writeForProvider(currentProvider, 'local_gateway');
+  const model = providerSelectedCatalogModel(currentProvider);
   const localApiKey = await codex.localGatewayAPIKey();
   await codex.applyLocalGateway({
     endpoint: status.endpoint,
     localApiKey,
     model,
+    modelCatalogJSON,
   });
 }
 
@@ -1700,11 +1782,6 @@ async function clearDirectSessionTarget(): Promise<void> {
 function endpointForRouteSettings(settings: RouteSettings): string {
   const clientHost = settings.listenAddress === '0.0.0.0' ? '127.0.0.1' : settings.listenAddress;
   return `http://${clientHost}:${settings.listenPort}/v1`;
-}
-
-function providerSelectedUpstreamModel(provider: Provider): string {
-  const selectedModel = providerSelectedModel(provider);
-  return selectedModel?.model.trim() || provider.selectedModel || 'gpt-4.1';
 }
 
 async function getProviderApiKey(providerId: string): Promise<string> {
@@ -1974,7 +2051,7 @@ function validationBody(apiFormat: ApiFormat, model: string): Record<string, unk
     return {
       model,
       messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 8,
+      max_tokens: providerValidationOutputTokenBudget,
       stream: false,
     };
   }
@@ -1982,14 +2059,14 @@ function validationBody(apiFormat: ApiFormat, model: string): Record<string, unk
     return {
       model,
       messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 8,
+      max_tokens: providerValidationOutputTokenBudget,
       stream: false,
     };
   }
   return {
     model,
     input: 'ping',
-    max_output_tokens: 8,
+    max_output_tokens: providerValidationOutputTokenBudget,
     stream: false,
   };
 }

@@ -17,7 +17,21 @@ export function providerCatalogSlug(provider: Provider, model: ProviderModel): s
     .map((character) => /[a-zA-Z0-9._-]/.test(character) ? character : '-')
     .join('')
     .toLowerCase();
-  return `ks-${shortId}-${safeName}`;
+  const sameSlugCount = provider.models.filter((candidate) => {
+    const candidateName = [...modelCustomName(candidate)]
+      .map((character) => /[a-zA-Z0-9._-]/.test(character) ? character : '-')
+      .join('')
+      .toLowerCase();
+    return candidateName === safeName;
+  }).length;
+  const collisionSuffix = sameSlugCount > 1 ? `-${stableModelHash(model.model)}` : '';
+  return `ks-${shortId}-${safeName}${collisionSuffix}`;
+}
+
+function stableModelHash(value: string): string {
+  let hash = 0;
+  for (const character of value) hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return hash.toString(36).slice(0, 6).padStart(6, '0');
 }
 
 export function providerSelectedModel(provider: Provider): ProviderModel | null {
@@ -34,6 +48,18 @@ export function providerSelectedModel(provider: Provider): ProviderModel | null 
   }
 
   return provider.models[0] ?? null;
+}
+
+export function providerModelForCatalogModel(provider: Provider, catalogModel: string): ProviderModel | null {
+  const requested = catalogModel.trim();
+  if (!requested) return null;
+
+  return provider.models.find((model) => {
+    const customName = modelCustomName(model);
+    return requested === providerCatalogSlug(provider, model)
+      || requested === customName
+      || requested === model.model.trim();
+  }) ?? null;
 }
 
 export function providerSelectedCatalogModel(provider: Provider): string {

@@ -1,5 +1,5 @@
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import {
   providerSelectedCatalogModel,
   providerSelectedDisplayModel,
@@ -11,12 +11,12 @@ import type { GatewayStatus, Provider, RouteSettings } from '@codex-key-switcher
 import {
   adaptUpstreamResponseToResponses,
   type ParsedUsage,
-  requestedModelFromBody,
   requestBodyWantsStream,
   ResponsesSSEAdapter,
   StreamingUsageParser,
   upstreamBaseURLForProvider,
   upstreamPathForGatewayPath,
+  upstreamRequestBodyFromGenericBody,
   upstreamRequestBodyFromResponsesBody,
   usageFromResponseBody,
 } from './gateway-protocol-adapter';
@@ -43,8 +43,16 @@ interface GatewayRequestContext {
   providerApiKey: string | null;
 }
 
+class GatewayRequestError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message);
+    this.name = 'GatewayRequestError';
+  }
+}
+
 export class LocalGatewayRuntime {
   private server: http.Server | null = null;
+  private readonly sockets = new Set<Socket>();
   private endpoint = 'http://127.0.0.1:3456/v1';
   private routeSettings = defaultRuntimeRouteSettings();
 
@@ -64,6 +72,10 @@ export class LocalGatewayRuntime {
 
     this.server = http.createServer((request, response) => {
       void this.handleRequest(request, response);
+    });
+    this.server.on('connection', (socket) => {
+      this.sockets.add(socket);
+      socket.once('close', () => this.sockets.delete(socket));
     });
 
     try {
@@ -88,6 +100,8 @@ export class LocalGatewayRuntime {
     const server = this.server;
     this.server = null;
     if (server) {
+      for (const socket of this.sockets) socket.destroy();
+      this.sockets.clear();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
@@ -125,16 +139,20 @@ export class LocalGatewayRuntime {
         return;
       }
 
-      const body = await readRequestBody(request);
       const context = await this.createRequestContext(request);
       if (!context.authorized) {
         writeJson(response, 401, { error: 'Unauthorized local gateway request' });
         return;
       }
 
+      const body = await readRequestBody(request);
       await this.forwardRequest(request, response, url, body, context);
     } catch (error) {
-      writeJson(response, 500, {
+      if (response.headersSent || response.destroyed) {
+        if (!response.writableEnded) response.end();
+        return;
+      }
+      writeJson(response, error instanceof GatewayRequestError ? error.statusCode : 500, {
         error: error instanceof Error ? error.message : 'Local gateway request failed',
       });
     }
@@ -170,13 +188,21 @@ export class LocalGatewayRuntime {
     const token = authorizationToken(request.headers.authorization);
     if (!token) return { authorized: false, provider: null, providerApiKey: null };
 
+    const localGatewayAPIKey = await this.codexConfig.localGatewayAPIKey();
+    if (token === localGatewayAPIKey) {
+      const current = await this.providerService.currentRoutingProviderWithApiKey();
+      return {
+        authorized: true,
+        provider: current?.provider ?? null,
+        providerApiKey: current?.apiKey ?? null,
+      };
+    }
+
     const current = await this.providerService.currentRoutingProviderWithApiKey();
     const provider = current?.provider ?? null;
     const providerApiKey = current?.apiKey ?? null;
-
-    const localGatewayAPIKey = await this.codexConfig.localGatewayAPIKey();
     return {
-      authorized: token === localGatewayAPIKey || Boolean(providerApiKey && providerApiKey === token),
+      authorized: Boolean(providerApiKey && providerApiKey === token),
       provider,
       providerApiKey,
     };
@@ -199,6 +225,7 @@ export class LocalGatewayRuntime {
     let lastAttempt: ForwardAttempt | null = null;
 
     for (const candidate of candidates) {
+      if (clientDisconnected(request, response)) return;
       const candidateApiKey = candidate.id === provider.id
         ? context.providerApiKey
         : await this.providerService.currentApiKey(candidate);
@@ -208,6 +235,7 @@ export class LocalGatewayRuntime {
         void this.recordUsage(attempt.provider, attempt.upstreamModel, attempt.status, attempt.durationMs, attempt.usage);
         return;
       }
+      if (clientDisconnected(request, response) || response.headersSent) return;
       if (!attempt.retryable) break;
     }
 
@@ -253,11 +281,7 @@ export class LocalGatewayRuntime {
       ? null
       : originalPath === '/responses'
         ? upstreamRequestBodyFromResponsesBody(body, provider, clientWantsStream)
-        : {
-            body,
-            upstreamModel: requestedModelFromBody(body) ?? providerSelectedCatalogModel(provider),
-            clientWantsStream: false,
-          };
+        : upstreamRequestBodyFromGenericBody(body, provider);
     const bodyData = upstreamBody?.body;
     const upstreamModel = upstreamBody?.upstreamModel ?? providerSelectedCatalogModel(provider);
     const startedAt = performance.now();
@@ -304,6 +328,9 @@ export class LocalGatewayRuntime {
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), upstreamRequestTimeoutMs);
+    const abortOnClientClose = () => controller.abort();
+    request.once('aborted', abortOnClientClose);
+    response.once('close', abortOnClientClose);
 
     try {
       const upstreamRequest: RequestInit = {
@@ -371,6 +398,8 @@ export class LocalGatewayRuntime {
       };
     } finally {
       clearTimeout(timeout);
+      request.off('aborted', abortOnClientClose);
+      response.off('close', abortOnClientClose);
     }
   }
 
@@ -417,23 +446,27 @@ export class LocalGatewayRuntime {
       while (true) {
         const result = await reader.read();
         if (result.done) break;
+        if (response.destroyed || response.writableEnded) return usageParser.finish();
         const text = decoder.decode(result.value, { stream: true });
         usageParser.processTextChunk(text);
         for (const event of adapter.processTextChunk(text)) {
+          if (response.destroyed || response.writableEnded) return usageParser.finish();
           if (!response.write(event)) await waitForDrain(response);
         }
       }
       const finalText = decoder.decode();
       usageParser.processTextChunk(finalText);
       for (const event of adapter.processTextChunk(finalText)) {
+        if (response.destroyed || response.writableEnded) return usageParser.finish();
         if (!response.write(event)) await waitForDrain(response);
       }
       for (const event of adapter.finish()) {
+        if (response.destroyed || response.writableEnded) return usageParser.finish();
         if (!response.write(event)) await waitForDrain(response);
       }
       return usageParser.finish();
     } finally {
-      response.end();
+      if (!response.destroyed && !response.writableEnded) response.end();
     }
   }
 
@@ -484,11 +517,16 @@ function normalizeRuntimeRouteSettings(settings: RouteSettings): RouteSettings {
     enabled: Boolean(settings.enabled),
     autoStart: Boolean(settings.autoStart),
     disabledExplicitly: Boolean(settings.disabledExplicitly),
-    listenAddress: allowLANListen || listenAddress.startsWith('127.') ? listenAddress : defaults.listenAddress,
+    listenAddress: normalizeRuntimeListenAddress(listenAddress, allowLANListen),
     listenPort: safePort(settings.listenPort),
     allowLANListen,
     failoverEnabled: Boolean(settings.failoverEnabled),
   };
+}
+
+function normalizeRuntimeListenAddress(address: string, allowLANListen: boolean): string {
+  if (address === '127.0.0.1' || address === 'localhost' || address.startsWith('127.')) return address;
+  return allowLANListen ? '0.0.0.0' : '127.0.0.1';
 }
 
 function endpointForAddress(address: string, port: number): string {
@@ -547,6 +585,7 @@ async function pipeNativeResponsesStream(
     while (true) {
       const result = await reader.read();
       if (result.done) break;
+      if (response.destroyed || response.writableEnded) return usageParser.finish();
       const chunk = Buffer.from(result.value);
       usageParser.processTextChunk(decoder.decode(result.value, { stream: true }));
       if (!response.write(chunk)) await waitForDrain(response);
@@ -554,22 +593,41 @@ async function pipeNativeResponsesStream(
     usageParser.processTextChunk(decoder.decode());
     return usageParser.finish();
   } finally {
-    response.end();
+    if (!response.destroyed && !response.writableEnded) response.end();
   }
 }
 
 function waitForDrain(response: http.ServerResponse): Promise<void> {
-  return new Promise((resolve) => response.once('drain', resolve));
+  if (response.destroyed || response.writableEnded) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      response.off('drain', done);
+      response.off('close', done);
+      response.off('error', done);
+      resolve();
+    };
+    response.once('drain', done);
+    response.once('close', done);
+    response.once('error', done);
+  });
+}
+
+function clientDisconnected(request: http.IncomingMessage, response: http.ServerResponse): boolean {
+  return request.aborted || request.destroyed || response.destroyed || response.writableEnded;
 }
 
 async function readRequestBody(request: http.IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  const declaredLength = Number(request.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > maxGatewayRequestBytes) {
+    throw new GatewayRequestError('HTTP request is too large', 413);
+  }
   let size = 0;
   for await (const chunk of request) {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += data.length;
     if (size > maxGatewayRequestBytes) {
-      throw new Error('HTTP request is too large');
+      throw new GatewayRequestError('HTTP request is too large', 413);
     }
     chunks.push(data);
   }

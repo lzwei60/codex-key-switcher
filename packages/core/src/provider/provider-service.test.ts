@@ -79,6 +79,46 @@ describe('ProviderService', () => {
 
     expect(credentials.reads).toBe(0);
   });
+
+  it('rolls back a newly written credential when provider persistence fails', async () => {
+    const repository = new FailingProviderRepository([]);
+    const credentials = new MemoryCredentialStore();
+    const service = new ProviderService(repository, credentials);
+
+    await expect(service.upsert({
+      id: 'provider-new',
+      name: 'New Provider',
+      apiKey: 'sk-new',
+      baseURL: 'https://api.example.com/v1',
+      apiFormat: 'responses',
+      models: [{ customName: 'GPT 4.1', model: 'gpt-4.1' }],
+    })).rejects.toThrow('provider persistence failed');
+
+    await expect(credentials.get('provider-new')).resolves.toBeNull();
+    await expect(repository.list()).resolves.toEqual([]);
+  });
+
+  it('restores the previous credential when editing fails to persist', async () => {
+    const repository = new FailingOnceProviderRepository([providerFixture({ id: 'provider-existing' })]);
+    const credentials = new MemoryCredentialStore([
+      ['provider-existing', 'sk-old'],
+    ]);
+    const service = new ProviderService(repository, credentials);
+
+    await expect(service.upsert({
+      id: 'provider-existing',
+      name: 'Updated Provider',
+      apiKey: 'sk-new',
+      baseURL: 'https://api.example.com/v1',
+      apiFormat: 'responses',
+      models: [{ customName: 'GPT 4.1', model: 'gpt-4.1' }],
+    })).rejects.toThrow('provider persistence failed');
+
+    await expect(credentials.get('provider-existing')).resolves.toBe('sk-old');
+    await expect(repository.list()).resolves.toMatchObject([
+      { id: 'provider-existing', name: 'Provider' },
+    ]);
+  });
 });
 
 class MemoryProviderRepository implements ProviderRepository {
@@ -111,6 +151,24 @@ class MemoryProviderRepository implements ProviderRepository {
 
   async setCurrentId(id: string): Promise<void> {
     this.currentId = id;
+  }
+}
+
+class FailingProviderRepository extends MemoryProviderRepository {
+  override async save(_provider: Provider): Promise<void> {
+    throw new Error('provider persistence failed');
+  }
+}
+
+class FailingOnceProviderRepository extends MemoryProviderRepository {
+  private failed = false;
+
+  override async save(provider: Provider): Promise<void> {
+    if (!this.failed) {
+      this.failed = true;
+      throw new Error('provider persistence failed');
+    }
+    await super.save(provider);
   }
 }
 

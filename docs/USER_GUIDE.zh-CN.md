@@ -4,13 +4,14 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 
 ## 适用平台
 
-- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.2-arm64.dmg`
-- macOS Intel：使用 `Codex-Key-Switcher-1.0.2-x64.dmg`
-- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.2-x64.exe`
+- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.3-arm64.dmg`
+- macOS Intel：使用 `Codex-Key-Switcher-1.0.3-x64.dmg`
+- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.3-x64.exe`
+- Linux x64：使用 `Codex-Key-Switcher-1.0.3-x86_64.AppImage` 或 `Codex-Key-Switcher-1.0.3-amd64.deb`
 
 当前安装包未签名、未 notarize。首次安装时 macOS 或 Windows 可能出现安全提示，这是正常现象。
 
-当前稳定版本为 `v1.0.2`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
+当前稳定版本为 `v1.0.3`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
 
 ## 首次使用
 
@@ -20,7 +21,7 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 4. 填写供应商名称、API Key、Base URL、API 格式和模型。
 5. 点击模型行里的“检测”，确认模型可用。
 6. 保存配置。
-7. 如果本地路由已启用，首次添加配置后需要重启 Codex，或关闭当前 Codex 会话后打开新会话。
+7. 如果本地路由已启用，首次添加配置后需要完全退出并重启 Codex。
 
 ## 配置供应商
 
@@ -34,6 +35,12 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 - API 格式：上游 API 协议。
 - 模型别名：Codex 侧看到的模型名称。
 - 上游模型：真实请求到上游供应商的模型名称。
+
+保存供应商后，应用会按当前连接模式生成模型 Catalog，并在 `config.toml` 顶层写入 `model_catalog_json`：
+
+- 本地路由模式：Codex UI 使用当前供应商的模型别名，网关再映射到真实上游模型。
+- 直连供应商模式：Codex UI 使用真实上游模型名，避免绕过网关后无法请求。
+- Catalog 文件放在应用私有数据目录，不会污染 `~/.codex/model-catalogs`。
 
 支持的 API 格式：
 
@@ -72,13 +79,13 @@ http://127.0.0.1:3456/v1
 
 启用本地路由后，应用会写入 Codex 配置文件，使 Codex 使用本地路由代理。
 
-以下场景需要重启 Codex，或关闭当前会话后打开新会话：
+以下场景需要完全退出并重启 Codex：
 
 - 首次添加供应商配置并启用本地路由。
 - 退出应用后重新启用本地路由。
 - Codex 当前会话仍在使用旧配置。
 
-切换供应商或模型后，应用会提示建议打开新会话。已有会话可能继续使用旧上下文。
+切换供应商或模型后，应用会更新 Catalog 和默认模型。Codex 的模型 UI 列表在启动时加载，因此必须完全退出并重新启动 Codex；仅打开新会话不保证刷新模型列表。已有会话不会被自动中断。
 
 ## 直连供应商模式
 
@@ -91,7 +98,7 @@ http://127.0.0.1:3456/v1
 - 直连模式不会记录本地请求日志和 Token 统计。
 - 在直连模式下通过状态栏切换到 Chat Completions 供应商会被阻止，并显示原因提示。
 
-切换直连供应商或模型后，建议关闭当前 Codex 会话并打开新会话。如果新会话仍未生效，再重启 Codex。
+切换直连供应商或模型后，应用会同时更新直连配置和 Catalog。必须完全退出并重新启动 Codex，才能刷新模型 UI 和直连配置；已有会话不会被自动中断。
 
 ## 状态栏菜单
 
@@ -109,7 +116,7 @@ http://127.0.0.1:3456/v1
 - 启动或停止本地路由
 - 退出
 
-点击“退出”时，应用会停止本地路由，并尝试恢复 Codex 原配置。恢复后需要重启 Codex 或打开新会话。
+点击“退出”时，应用会停止本地路由，并尝试恢复 Codex 原配置。恢复后需要重启 Codex。
 
 ## 设置
 
@@ -207,7 +214,7 @@ http://127.0.0.1:3456/v1
 - Base URL 和 API 格式是否匹配。
 - 模型检测是否通过。
 
-如果刚启用本地路由，请重启 Codex 或打开新会话。
+如果刚启用本地路由，请完全退出并重启 Codex。
 
 ### 关闭窗口后应用还在运行
 
@@ -215,7 +222,7 @@ http://127.0.0.1:3456/v1
 
 ### 退出后为什么提示重启 Codex
 
-退出时应用会停止本地路由并恢复 Codex 原配置。Codex 需要重新读取配置，所以需要重启 Codex 或打开新会话。
+退出时应用会停止本地路由并恢复 Codex 原配置。Codex 需要重新读取配置，所以需要完全退出并重启 Codex。
 
 ### 安装后首次打开为什么不应该要求输入本机密码
 
