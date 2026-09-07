@@ -4,13 +4,14 @@ Codex Key Switcher is a desktop app for managing Codex API keys, providers, mode
 
 ## Supported Platforms
 
-- macOS Apple Silicon: use `Codex-Key-Switcher-1.0.2-arm64.dmg`
-- macOS Intel: use `Codex-Key-Switcher-1.0.2-x64.dmg`
-- Windows x64: use `Codex-Key-Switcher-Setup-1.0.2-x64.exe`
+- macOS Apple Silicon: use `Codex-Key-Switcher-1.0.3-arm64.dmg`
+- macOS Intel: use `Codex-Key-Switcher-1.0.3-x64.dmg`
+- Windows x64: use `Codex-Key-Switcher-Setup-1.0.3-x64.exe`
+- Linux x64: use `Codex-Key-Switcher-1.0.3-x86_64.AppImage` or `Codex-Key-Switcher-1.0.3-amd64.deb`
 
 The current installers are unsigned and not notarized. macOS or Windows may show a security warning on first install.
 
-The current stable version is `v1.0.2`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
+The current stable version is `v1.0.3`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
 
 ## First Run
 
@@ -20,7 +21,7 @@ The current stable version is `v1.0.2`. The version shown in About and Settings 
 4. Enter provider name, API key, base URL, API format, and model mapping.
 5. Click Check on the model row to verify connectivity.
 6. Save the provider.
-7. If the local gateway is enabled, restart Codex after adding the first provider, or close the current Codex conversation and open a new one.
+7. If the local gateway is enabled, fully quit and restart Codex after adding the first provider.
 
 ## Providers
 
@@ -34,6 +35,12 @@ Each provider contains:
 - API Format: upstream API protocol.
 - Model Alias: model name exposed to Codex.
 - Upstream Model: real model name sent to the provider.
+
+After a provider is saved, the app generates a model Catalog for the active connection mode and writes `model_catalog_json` at the top level of `config.toml`:
+
+- Local gateway mode: Codex UI receives provider model aliases, and the gateway maps them to real upstream models.
+- Direct provider mode: Codex UI receives real upstream model names so requests work without gateway translation.
+- The Catalog stays in the app's private data directory and does not modify `~/.codex/model-catalogs`.
 
 Supported API formats:
 
@@ -72,13 +79,13 @@ http://127.0.0.1:3456/v1
 
 When the local gateway is enabled, the app writes the local endpoint into the Codex config.
 
-Restart Codex, or close the current conversation and open a new one, in these cases:
+Fully quit and restart Codex in these cases:
 
 - You added the first provider while the local gateway is enabled.
 - You re-enabled the local gateway after quitting the app.
 - The current Codex conversation is still using an old config.
 
-When switching providers or models, the app suggests opening a new conversation because existing conversations may continue using old context.
+When switching providers or models, the app updates the Catalog and default model. Codex loads the model UI at startup, so fully quit and restart Codex to refresh the model list. Existing conversations are not interrupted automatically.
 
 ## Direct Provider Mode
 
@@ -91,7 +98,7 @@ Direct mode limitations:
 - Direct mode does not record local request logs or token statistics.
 - In direct mode, switching to a Chat Completions provider from the tray menu is blocked and the app shows a reason.
 
-After switching the direct provider or model, close the current Codex conversation and open a new one. If the new conversation still does not pick up the change, restart Codex.
+After switching the direct provider or model, the app updates both the direct config and Catalog. Fully quit and restart Codex to refresh the model UI and direct configuration. Existing conversations are not interrupted automatically.
 
 ## Tray Menu
 
@@ -109,7 +116,7 @@ The tray menu includes:
 - Start or stop local gateway
 - Quit
 
-When you choose Quit, the app stops the local gateway and tries to restore the original Codex config. Restart Codex or open a new conversation afterwards.
+When you choose Quit, the app stops the local gateway and tries to restore the original Codex config. Restart Codex afterwards.
 
 ## Settings
 
@@ -207,7 +214,7 @@ Check the following:
 - The base URL matches the selected API format.
 - The model check passes.
 
-If you just enabled the local gateway, restart Codex or open a new conversation.
+If you just enabled the local gateway, fully quit and restart Codex.
 
 ### The app keeps running after I close the window
 
@@ -215,7 +222,7 @@ This is expected. Closing the window hides the main UI. The app keeps running in
 
 ### Why does the app ask me to restart Codex after quitting?
 
-On quit, the app stops the local gateway and restores the original Codex config. Codex needs to reload its config, so restart Codex or open a new conversation.
+On quit, the app stops the local gateway and restores the original Codex config. Codex needs to reload its config, so fully quit and restart Codex.
 
 ### Why should first launch not ask for my local machine password?
 

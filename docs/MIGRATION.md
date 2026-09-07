@@ -48,6 +48,7 @@ The renderer does not receive Node.js access and does not read provider secrets 
 - Production Electron loading resolves the exported Next.js app instead of depending on `next dev`.
 - Electron main and preload entrypoints are bundled with `esbuild`.
 - `electron-builder` packaging is configured for macOS and Windows targets.
+- Linux x64 packaging is configured for AppImage and deb targets; Codex config paths and restore scripts use platform-neutral runtime paths.
 - Product icon assets are generated through `scripts/generate-icons.mjs`.
 
 ## v1.0.0 Compatibility Notes

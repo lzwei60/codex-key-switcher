@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CodexConfigAdapter } from '@codex-key-switcher/core';
 import type { AppSettingsStore } from './app-settings-store';
-import { ensurePrivateDirectory } from './json-file';
+import { ensurePrivateDirectory, writeTextFile } from './json-file';
 
 const managedBackupSuffix = '.codex-key-switcher.bak';
 const legacyBackupSuffix = '.bak';
@@ -24,13 +24,13 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
     return await this.settings.getString('codexConfigDir') ?? path.join(this.homeDirectory, '.codex');
   }
 
-  async applyLocalGateway(input: { endpoint: string; localApiKey: string; model: string }): Promise<void> {
+  async applyLocalGateway(input: { endpoint: string; localApiKey: string; model: string; modelCatalogJSON?: string }): Promise<void> {
     const configPath = await this.configPath();
     const authPath = await this.authPath();
 
     const originalConfig = await fs.readFile(configPath, 'utf8');
     const originalAuth = await fs.readFile(authPath, 'utf8');
-    const updatedConfig = await this.updatedConfigText(originalConfig, input.endpoint, input.model, 'responses');
+    const updatedConfig = await this.updatedConfigText(originalConfig, input.endpoint, input.model, 'responses', input.modelCatalogJSON);
     const updatedAuth = updatedAuthText(originalAuth, input.localApiKey);
 
     if (updatedConfig === originalConfig && updatedAuth === originalAuth) {
@@ -43,25 +43,25 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
     await this.backupFileIfNeeded(authPath);
     await this.writeRestoreScript();
 
-    await fs.writeFile(configPath, updatedConfig, 'utf8');
+    await writeTextFile(configPath, updatedConfig, 0o600);
     try {
-      await fs.writeFile(authPath, updatedAuth, 'utf8');
+      await writeTextFile(authPath, updatedAuth, 0o600);
     } catch (error) {
-      await fs.writeFile(configPath, originalConfig, 'utf8').catch(() => undefined);
-      await fs.writeFile(authPath, originalAuth, 'utf8').catch(() => undefined);
+      await writeTextFile(configPath, originalConfig, 0o600).catch(() => undefined);
+      await writeTextFile(authPath, originalAuth, 0o600).catch(() => undefined);
       throw error;
     }
 
     await this.markManagedProxyApplied(input.endpoint);
   }
 
-  async applyDirectProvider(input: { baseURL: string; apiKey: string; model: string }): Promise<void> {
+  async applyDirectProvider(input: { baseURL: string; apiKey: string; model: string; modelCatalogJSON?: string }): Promise<void> {
     const configPath = await this.configPath();
     const authPath = await this.authPath();
 
     const originalConfig = await fs.readFile(configPath, 'utf8');
     const originalAuth = await fs.readFile(authPath, 'utf8');
-    const updatedConfig = await this.updatedConfigText(originalConfig, input.baseURL, input.model, 'responses');
+    const updatedConfig = await this.updatedConfigText(originalConfig, input.baseURL, input.model, 'responses', input.modelCatalogJSON);
     const updatedAuth = updatedAuthText(originalAuth, input.apiKey);
 
     if (updatedConfig === originalConfig && updatedAuth === originalAuth) {
@@ -74,12 +74,12 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
     await this.backupFileIfNeeded(authPath);
     await this.writeRestoreScript();
 
-    await fs.writeFile(configPath, updatedConfig, 'utf8');
+    await writeTextFile(configPath, updatedConfig, 0o600);
     try {
-      await fs.writeFile(authPath, updatedAuth, 'utf8');
+      await writeTextFile(authPath, updatedAuth, 0o600);
     } catch (error) {
-      await fs.writeFile(configPath, originalConfig, 'utf8').catch(() => undefined);
-      await fs.writeFile(authPath, originalAuth, 'utf8').catch(() => undefined);
+      await writeTextFile(configPath, originalConfig, 0o600).catch(() => undefined);
+      await writeTextFile(authPath, originalAuth, 0o600).catch(() => undefined);
       throw error;
     }
 
@@ -112,9 +112,9 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
     const currentConfig = await readOptionalFile(configPath);
     const currentAuth = await readOptionalFile(authPath);
 
-    await fs.writeFile(configPath, backupConfig);
+    await writeTextFile(configPath, backupConfig.toString('utf8'), 0o600);
     try {
-      await fs.writeFile(authPath, backupAuth);
+      await writeTextFile(authPath, backupAuth.toString('utf8'), 0o600);
     } catch (error) {
       await restoreSnapshot(configPath, currentConfig);
       await restoreSnapshot(authPath, currentAuth);
@@ -174,16 +174,24 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
 
   // Codex still talks to the configured provider through its Responses wire API.
   // Chat/Anthropic upstreams are normalized by the local gateway before this file is involved.
-  private async updatedConfigText(configText: string, endpoint: string, model: string, wireAPI: 'responses'): Promise<string> {
+  private async updatedConfigText(
+    configText: string,
+    endpoint: string,
+    model: string,
+    wireAPI: 'responses',
+    modelCatalogJSON?: string,
+  ): Promise<string> {
     const modelProviderName = await this.managedProviderNameForConfigText(configText);
     const lines = splitLines(configText).map(redactSensitiveComment);
     const modelLine = `model = ${tomlString(model || 'gpt-4.1')}`;
+    const modelCatalogLine = modelCatalogJSON ? `model_catalog_json = ${tomlString(modelCatalogJSON)}` : null;
     const providerLine = `model_provider = ${tomlString(modelProviderName)}`;
     const reasoningEffortLine = 'model_reasoning_effort = "high"';
     const baseURLLine = `base_url = ${tomlString(endpoint)}`;
     const wireAPILine = `wire_api = ${tomlString(wireAPI)}`;
 
     let updatedTopLevelModel = false;
+    let updatedModelCatalog = false;
     let updatedTopLevelReasoningEffort = false;
     let hasModelProviderLine = false;
     let insideAnySection = false;
@@ -224,6 +232,14 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
         continue;
       }
 
+      if (!insideAnySection && !isSection && tomlLineHasKey(trimmed, 'model_catalog_json')) {
+        if (modelCatalogLine) {
+          lines[index] = modelCatalogLine;
+          updatedModelCatalog = true;
+        }
+        continue;
+      }
+
       if (!insideAnySection && !isSection && tomlLineHasKey(trimmed, 'model_reasoning_effort')) {
         lines[index] = reasoningEffortLine;
         updatedTopLevelReasoningEffort = true;
@@ -247,8 +263,12 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
 
     if (!hasModelProviderLine) lines.unshift(providerLine);
     if (!updatedTopLevelModel) lines.splice(hasModelProviderLine ? 1 : 0, 0, modelLine);
+    if (modelCatalogLine && !updatedModelCatalog) {
+      const modelIndex = topLevelLineIndex(lines, 'model');
+      lines.splice(modelIndex >= 0 ? modelIndex + 1 : 1, 0, modelCatalogLine);
+    }
     if (!updatedTopLevelReasoningEffort) {
-      const insertIndex = lines.findIndex((line) => tomlLineHasKey(line.trim(), 'model')) + 1;
+      const insertIndex = topLevelLineIndex(lines, 'model') + 1;
       lines.splice(insertIndex > 0 ? insertIndex : 1, 0, reasoningEffortLine);
     }
 
@@ -315,8 +335,10 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
     if (!exists) return;
 
     const backupPath = `${filePath}${managedBackupSuffix}`;
-    await fs.rm(backupPath, { force: true });
+    // Keep the first user-owned snapshot across provider/model switches.
+    if (await pathExists(backupPath)) return;
     await fs.copyFile(filePath, backupPath);
+    if (process.platform !== 'win32') await fs.chmod(backupPath, 0o600).catch(() => undefined);
   }
 
   private async existingBackupPath(filePath: string): Promise<string | null> {
@@ -364,8 +386,8 @@ export class CodexFileConfigAdapter implements CodexConfigAdapter {
 
 function shellRestoreScript(configPath: string, authPath: string): string {
   return [
-    '#!/bin/zsh',
-    'set -euo pipefail',
+    '#!/bin/sh',
+    'set -eu',
     '',
     `CONFIG=${shellSingleQuotedString(configPath)}`,
     `AUTH=${shellSingleQuotedString(authPath)}`,
@@ -373,13 +395,13 @@ function shellRestoreScript(configPath: string, authPath: string): string {
     `AUTH_BAK="${'${AUTH}'}${managedBackupSuffix}"`,
     'STAMP=$(date +%Y%m%d%H%M%S)',
     '',
-    'if [[ ! -f "$CONFIG_BAK" || ! -f "$AUTH_BAK" ]]; then',
+    'if [ ! -f "$CONFIG_BAK" ] || [ ! -f "$AUTH_BAK" ]; then',
     '  echo "Missing Codex Key Switcher backup files."',
     '  exit 1',
     'fi',
     '',
-    '[[ -f "$CONFIG" ]] && cp "$CONFIG" "${CONFIG}.before-restore.${STAMP}"',
-    '[[ -f "$AUTH" ]] && cp "$AUTH" "${AUTH}.before-restore.${STAMP}"',
+    '[ -f "$CONFIG" ] && cp "$CONFIG" "${CONFIG}.before-restore.${STAMP}"',
+    '[ -f "$AUTH" ] && cp "$AUTH" "${AUTH}.before-restore.${STAMP}"',
     'cp "$CONFIG_BAK" "$CONFIG"',
     'cp "$AUTH_BAK" "$AUTH"',
     'rm -f "$CONFIG_BAK" "$AUTH_BAK"',
@@ -457,6 +479,19 @@ function tomlLineHasKey(line: string, key: string): boolean {
   return trimmed.slice(0, equalIndex).trim() === key;
 }
 
+function topLevelLineIndex(lines: string[], key: string): number {
+  let insideAnySection = false;
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index]?.trim() ?? '';
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      insideAnySection = true;
+      continue;
+    }
+    if (!insideAnySection && tomlLineHasKey(trimmed, key)) return index;
+  }
+  return -1;
+}
+
 function tomlValueForLine(line: string): string | null {
   const equalIndex = line.indexOf('=');
   if (equalIndex < 0) return null;
@@ -500,6 +535,7 @@ async function readOptionalFile(filePath: string): Promise<Buffer | null> {
 async function restoreSnapshot(filePath: string, data: Buffer | null): Promise<void> {
   if (data) {
     await fs.writeFile(filePath, data);
+    if (process.platform !== 'win32') await fs.chmod(filePath, 0o600).catch(() => undefined);
   } else if (await pathExists(filePath)) {
     await fs.unlink(filePath);
   }

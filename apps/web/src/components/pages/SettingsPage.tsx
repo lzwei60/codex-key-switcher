@@ -584,5 +584,6 @@ function updatePlatformLabel(platform: AppUpdateInfo['platform'] | undefined, te
   if (platform === 'darwin-arm64') return text('Mac M 芯片', 'Mac Apple Silicon');
   if (platform === 'darwin-x64') return text('Mac Intel', 'Mac Intel');
   if (platform === 'win32-x64') return text('Windows x64', 'Windows x64');
+  if (platform === 'linux-x64') return text('Linux x64', 'Linux x64');
   return text('暂不支持', 'Unsupported');
 }

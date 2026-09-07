@@ -1,8 +1,13 @@
 {
   "name": "@codex-key-switcher/desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Cross-platform Codex local gateway provider switcher.",
-  "author": "Codex Key Switcher",
+  "homepage": "https://github.com/lzwei60/codex-key-switcher",
+  "desktopName": "Codex Key Switcher",
+  "author": {
+    "name": "Codex Key Switcher",
+    "email": "support@codex-key-switcher.local"
+  },
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
@@ -18,6 +23,7 @@
     "dist:mac:x64": "pnpm build && electron-builder --mac --x64",
     "dist:mac:arm64": "pnpm build && electron-builder --mac --arm64",
     "dist:win": "pnpm build && electron-builder --win --x64",
+    "dist:linux": "pnpm build && electron-builder --linux --x64",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run"
@@ -35,6 +41,7 @@
   "build": {
     "appId": "com.codexkeyswitcher.app",
     "productName": "Codex Key Switcher",
+    "executableName": "codex-key-switcher",
     "afterPack": "../../scripts/adhoc-sign-mac.mjs",
     "compression": "maximum",
     "electronLanguages": [
@@ -87,6 +94,16 @@
         }
       ],
       "artifactName": "Codex-Key-Switcher-Setup-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "syncDesktopName": true,
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "artifactName": "Codex-Key-Switcher-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

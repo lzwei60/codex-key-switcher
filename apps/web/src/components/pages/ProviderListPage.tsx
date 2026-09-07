@@ -116,9 +116,9 @@ export function ProviderListPage({
       await onRefreshGateway();
       await refreshRouteSettings();
       if (isDirectMode) {
-        message.success(`已写入 ${nextProvider?.name ?? '新供应商'} 的直连配置，请在 Codex 新开会话；未生效再重启。`);
+        message.success(`已写入 ${nextProvider?.name ?? '新供应商'} 的直连配置和模型列表，请重启 Codex 使其生效。`);
       } else {
-        message.success('当前供应商已更新');
+        message.success('当前供应商和模型列表已更新，请重启 Codex 刷新模型 UI');
       }
     } catch (error) {
       message.error(error instanceof Error ? error.message : '切换失败');

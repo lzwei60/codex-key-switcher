@@ -13,6 +13,8 @@ type CredentialPayload = Record<string, StoredCredential | string>;
 
 export class CredentialFileStore implements CredentialStore {
   private loaded = false;
+  private loading: Promise<void> | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
   private values = new Map<string, StoredCredential>();
   private readonly filePath: string;
 
@@ -63,28 +65,29 @@ export class CredentialFileStore implements CredentialStore {
 
   private async load(): Promise<void> {
     if (this.loaded) return;
+    this.loading ??= readJsonFile<CredentialPayload>(this.filePath, {}).then((payload) => {
+      this.values = new Map();
+      for (const [providerId, stored] of Object.entries(payload)) {
+        const normalizedId = normalizeProviderId(providerId);
+        if (!normalizedId) continue;
 
-    const payload = await readJsonFile<CredentialPayload>(this.filePath, {});
-    this.values = new Map();
-    for (const [providerId, stored] of Object.entries(payload)) {
-      const normalizedId = normalizeProviderId(providerId);
-      if (!normalizedId) continue;
-
-      if (typeof stored === 'string') {
-        this.values.set(normalizedId, {
-          value: stored,
-          encrypted: false,
-          updatedAt: 0,
-        });
-      } else if (stored && typeof stored.value === 'string') {
-        this.values.set(normalizedId, {
-          value: stored.value,
-          encrypted: Boolean(stored.encrypted),
-          updatedAt: Number(stored.updatedAt) || 0,
-        });
+        if (typeof stored === 'string') {
+          this.values.set(normalizedId, {
+            value: stored,
+            encrypted: false,
+            updatedAt: 0,
+          });
+        } else if (stored && typeof stored.value === 'string') {
+          this.values.set(normalizedId, {
+            value: stored.value,
+            encrypted: Boolean(stored.encrypted),
+            updatedAt: Number(stored.updatedAt) || 0,
+          });
+        }
       }
-    }
-    this.loaded = true;
+      this.loaded = true;
+    });
+    await this.loading;
   }
 
   private async persist(): Promise<void> {
@@ -92,7 +95,11 @@ export class CredentialFileStore implements CredentialStore {
     for (const [providerId, credential] of this.values.entries()) {
       payload[providerId] = credential;
     }
-    await writeJsonFile(this.filePath, payload);
+    const nextWrite = this.writeQueue
+      .catch(() => undefined)
+      .then(() => writeJsonFile(this.filePath, payload));
+    this.writeQueue = nextWrite;
+    await nextWrite;
   }
 }
 
