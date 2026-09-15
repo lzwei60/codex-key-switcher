@@ -171,12 +171,50 @@ html[data-theme="dark"] body {
   width: 100%;
 }
 
+.model-config-card {
+  background: #f7f9fc;
+  border: 1px solid #e5e9f0;
+  border-radius: 12px;
+  padding: 14px;
+}
+
+.model-config-card__header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.model-config-card__index {
+  color: #172033;
+  flex: 1;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.model-config-card__advanced {
+  border-top: 1px solid #e5e9f0;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1.35fr 1fr 1fr;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.model-config-card__advanced .ant-form-item {
+  margin-bottom: 0;
+}
+
 .model-inline-row,
 .model-row {
   align-items: flex-start;
   display: flex;
   gap: 12px;
   width: 100%;
+}
+
+.model-inline-row--primary .model-inline-control {
+  min-width: 0;
 }
 
 .model-row .ant-form-item {
@@ -609,6 +647,19 @@ html[data-theme="dark"] .provider-card {
   border-color: #334155;
 }
 
+html[data-theme="dark"] .model-config-card {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+html[data-theme="dark"] .model-config-card__advanced {
+  border-top-color: #334155;
+}
+
+html[data-theme="dark"] .model-config-card__index {
+  color: #f8fafc;
+}
+
 html[data-theme="dark"] .plain-panel {
   background: #111827;
   border-color: #334155;
@@ -647,6 +698,10 @@ html[data-theme="dark"] .provider-avatar {
   .model-inline-row,
   .model-row {
     flex-direction: column;
+  }
+
+  .model-config-card__advanced {
+    grid-template-columns: 1fr;
   }
 
   .model-inline-delete {

@@ -4,14 +4,14 @@ Codex Key Switcher is a desktop app for managing Codex API keys, providers, mode
 
 ## Supported Platforms
 
-- macOS Apple Silicon: use `Codex-Key-Switcher-1.0.3-arm64.dmg`
-- macOS Intel: use `Codex-Key-Switcher-1.0.3-x64.dmg`
-- Windows x64: use `Codex-Key-Switcher-Setup-1.0.3-x64.exe`
-- Linux x64: use `Codex-Key-Switcher-1.0.3-x86_64.AppImage` or `Codex-Key-Switcher-1.0.3-amd64.deb`
+- macOS Apple Silicon: use `Codex-Key-Switcher-1.0.4-arm64.dmg`
+- macOS Intel: use `Codex-Key-Switcher-1.0.4-x64.dmg`
+- Windows x64: use `Codex-Key-Switcher-Setup-1.0.4-x64.exe`
+- Linux x64: use `Codex-Key-Switcher-1.0.4-x86_64.AppImage` or `Codex-Key-Switcher-1.0.4-amd64.deb`
 
 The current installers are unsigned and not notarized. macOS or Windows may show a security warning on first install.
 
-The current stable version is `v1.0.3`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
+The current stable version is `v1.0.4`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
 
 ## First Run
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider } from '@codex-key-switcher/shared';
-import { directSessionTargetForProvider, providerModelForCatalogModel, providerSelectedCatalogModel } from './provider-models';
+import { directSessionTargetForProvider, providerModelForCatalogModel, providerModelSupportsImages, providerSelectedCatalogModel } from './provider-models';
 
 describe('directSessionTargetForProvider', () => {
   it('keeps providers distinct when upstream model names are identical', () => {
@@ -28,6 +28,21 @@ describe('directSessionTargetForProvider', () => {
 });
 
 describe('provider catalog model mapping', () => {
+  it('treats inherited image support as enabled for Responses models', () => {
+    const provider = providerFixture({ id: 'provider-1', name: 'Provider', baseURL: 'https://provider.example/v1' });
+    expect(providerModelSupportsImages(provider)).toBe(true);
+    expect(providerModelSupportsImages({
+      ...provider,
+      models: [{ customName: 'Text only', model: 'text-only', supportsImages: false }],
+      selectedModel: 'Text only',
+    })).toBe(false);
+    expect(providerModelSupportsImages({
+      ...provider,
+      models: [{ customName: 'Chat', model: 'chat', apiFormat: 'chat_completions' }],
+      selectedModel: 'Chat',
+    })).toBe(false);
+  });
+
   it('maps catalog slugs and aliases back to the upstream model', () => {
     const provider = providerFixture({ id: 'provider-12345678', name: 'Provider', baseURL: 'https://provider.example/v1' });
     provider.models = [

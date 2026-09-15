@@ -18,7 +18,7 @@ Codex Key Switcher 通过 GitHub Releases 分发未签名桌面安装包。应�
 ## 版本规则
 
 1. 更新 `apps/desktop/package.json` 中的 `version`。
-2. 使用匹配的 Git tag，例如 `v1.0.3`。
+2. 使用匹配的 Git tag，例如 `v1.0.4`。
 3. GitHub Release 的 latest 版本必须使用同一个 tag。
 
 更新检查会用 `app.getVersion()` 和 GitHub 最新 Release 的 tag 或 release name 对比版本号，并自动去掉开头的 `v`。
@@ -44,7 +44,7 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.3`。
+4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.4`。
 5. 上传 `release/` 目录下的四个平台安装包资源组。
 6. 将该 GitHub Release 标记为 latest。
 7. 安装上一个桌面版本，并验证“设置 -> 更新”：
@@ -64,6 +64,61 @@ pnpm --filter @codex-key-switcher/desktop dist:linux
 - Release notes 应明确告知用户安装包未签名，并要求用户只从本仓库 GitHub Releases 页面下载。
 
 在面向正式产品级公开分发前，应补充代码签名和 macOS notarization。
+
+## v1.0.4 Release Notes
+
+### 版本定位
+
+`v1.0.4` 是基于 `v1.0.3` 的模型能力、协议适配和稳定性版本。该版本支持同一供应商下按请求模型选择不同协议，补强 Codex 模型 Catalog 生成与校验，修复流式响应异常完成和网关超时问题，并完善供应商配置与中英文界面。
+
+### 新增内容
+
+- 支持在同一供应商下为不同模型配置独立的 API 格式：Responses、Chat Completions 或 Anthropic Messages。
+- 支持为模型单独配置推理参数能力和图片输入能力，并提供“继承供应商”选项。
+- 支持从上游拉取模型列表、逐模型检测，以及保存前对未检测模型进行提示。
+- 支持按 Codex 请求中的 `model` 选择当前供应商下的实际模型，不再要求切换供应商才能切换模型。
+- 新增更完整的模型 Catalog 字段补全，减少 Codex `model/list` 或 `thread/start` 因字段缺失导致的兼容问题。
+- 新增本地网关协议转换回归测试、模型 Catalog 校验测试和超时/断流场景测试。
+- 补充桌面端托盘菜单、诊断、供应商、设置和用量提示的中英文显示。
+
+### 修复内容
+
+- 修复原生 Responses 流直接以文本增量开始或提前结束时，网关可能返回不完整事件序列的问题；异常结束现在会返回 `response.failed`，不会伪造 `response.completed`。
+- 修复 Chat Completions 与 Anthropic Messages 的工具调用历史、系统指令和完整消息历史转换问题。
+- 修复跨协议请求只携带 `previous_response_id` 或 `conversation` 时可能静默丢失历史的问题；现在会在请求上游前明确返回 400。
+- 修复不支持图片或文件历史的模型被错误转发的问题，避免附件被静默丢弃。
+- 修复上游响应头等待、普通请求、流式空闲和请求体读取缺少分阶段超时的问题，超时会记录为失败并返回对应错误状态。
+- 修复正常读取请求体后 `IncomingMessage.destroyed` 导致网关误判客户端断开的问题。
+- 修复 DeepSeek 等 OpenAI 兼容上游的协议入口、模型映射和请求头适配问题。
+- 修复模型别名重复、模型能力配置未保留，以及模型校验后修改仍被误认为已校验的问题。
+
+### 优化内容
+
+- 优化模型编辑器，将基础字段与协议、推理、图片能力配置分组展示，并在窄屏下改为单列布局。
+- 优化供应商列表、诊断页、更新页和用量页的运行时错误本地化，减少直接向用户暴露内部英文错误。
+- 优化模型 Catalog 模板匹配：优先按真实上游模型复用缓存模板，缺失时使用完整默认字段补全，不再按数组索引复用不相关模型模板。
+- 优化默认模型切换提示，明确区分默认模型更新与已有会话中显式模型的选择，避免误解为正在运行的会话会热切换。
+- 优化网关流式转发的背压、客户端断开清理和失败状态记录，降低长连接泄漏和错误统计为成功的风险。
+
+### 升级说明
+
+- 本版本保留已有供应商、凭据、用量统计和连接设置；旧模型配置中的可选能力字段会按供应商默认值兼容处理。
+- 修改供应商、模型或连接模式后，需要重新加载 Codex 的模型列表；切换器的默认模型不会覆盖已有会话明确指定的模型。
+- Chat Completions 和 Anthropic 模型需要本地路由模式；直连模式要求所有模型最终使用 Responses 协议。
+- 跨协议继续会话时，客户端需要提交完整可见历史；只提交 Responses 专属的响应 ID 不会被转换器强行恢复。
+- 当前安装包仍未签名、未 notarize。请只从本仓库 GitHub Releases 页面下载。
+
+### 安装包
+
+- macOS Apple Silicon：`Codex-Key-Switcher-1.0.4-arm64.dmg`
+- macOS Intel：`Codex-Key-Switcher-1.0.4-x64.dmg`
+- Windows x64：`Codex-Key-Switcher-Setup-1.0.4-x64.exe`
+- Linux x64：`Codex-Key-Switcher-1.0.4-x86_64.AppImage` 和 `Codex-Key-Switcher-1.0.4-amd64.deb`
+
+### 已知限制
+
+- 当前跨协议适配器只保证文本和函数工具历史；Chat Completions 或 Anthropic 路径收到图片/文件历史时会明确拒绝。
+- Windows 和 Linux 安装包在 macOS 宿主机上只能完成交叉构建，公开发布前仍需在目标系统做安装、启动和升级冒烟验证。
 
 ## v1.0.3 Release Notes
 

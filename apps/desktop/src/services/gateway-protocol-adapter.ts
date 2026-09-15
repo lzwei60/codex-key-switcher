@@ -1,12 +1,25 @@
-import { providerModelForCatalogModel, providerSelectedCatalogModel, providerSelectedModel } from '@codex-key-switcher/core';
+import { providerForModel, providerModelForCatalogModel, providerModelSupportsImages, providerSelectedCatalogModel, providerSelectedModel } from '@codex-key-switcher/core';
 import type { Provider } from '@codex-key-switcher/shared';
 
 const nonOpenAIUpstreamMinimumOutputTokens = 16;
+
+export class GatewayCompatibilityError extends Error {
+  readonly statusCode = 400;
+}
+
+export function providerForRequest(provider: Provider, body: Buffer): Provider {
+  return providerForModel(provider, requestedModelFromBody(body));
+}
 
 export interface UpstreamRequestBody {
   body: Buffer;
   upstreamModel: string;
   clientWantsStream: boolean;
+}
+
+interface AppliedActiveModelBody {
+  body: Buffer;
+  upstreamModel: string;
 }
 
 export interface AdaptedUpstreamResponse {
@@ -48,6 +61,204 @@ export class StreamingUsageParser {
   }
 }
 
+export class NativeResponsesSSEAdapter {
+  private responseId = `resp_${crypto.randomUUID()}`;
+  private textItemId = `msg_${crypto.randomUUID()}`;
+  private textOutputIndex = 0;
+  private blockBuffer = '';
+  private mode: 'pending' | 'passthrough' | 'repair-text' = 'pending';
+  private responseStarted = false;
+  private textStarted = false;
+  private completed = false;
+  private passthroughCompleted = false;
+  private fullText = '';
+  private completedResponse: Record<string, unknown> | null = null;
+  private readonly otherOutput = new Map<number, unknown>();
+  failed = false;
+
+  constructor(private readonly model: string) {}
+
+  processTextChunk(chunk: string): string[] {
+    this.blockBuffer += chunk;
+    const blocks = this.blockBuffer.split(/\r?\n\r?\n/);
+    this.blockBuffer = blocks.pop() ?? '';
+    return blocks.flatMap((block) => this.processBlock(block));
+  }
+
+  finish(): string[] {
+    const events = this.blockBuffer.trim() ? this.processBlock(this.blockBuffer) : [];
+    this.blockBuffer = '';
+    if (this.completed || this.passthroughCompleted) return events;
+    return [...events, ...this.fail('Upstream stream ended without a terminal event')];
+  }
+
+  private processBlock(rawBlock: string): string[] {
+    const block = rawBlock.trim();
+    if (!block) return [];
+    if (this.mode === 'passthrough') {
+      this.trackNativePayload(ssePayloadFromBlock(block));
+      return [`${block}\n\n`];
+    }
+
+    const payload = ssePayloadFromBlock(block);
+    const type = stringValue(payload?.type);
+    if (this.mode === 'pending') {
+      if (!payload) return [`${block}\n\n`];
+      const completedText = type === 'response.completed' && isRecord(payload.response)
+        ? stringValue(payload.response.output_text)
+        : null;
+      this.mode = type === 'response.output_text.delta' || completedText !== null ? 'repair-text' : 'passthrough';
+      if (this.mode === 'passthrough') {
+        this.trackNativePayload(payload);
+        return [`${block}\n\n`];
+      }
+    }
+
+    if (!payload) return [];
+    if (this.completed) return [];
+    if (type === 'response.output_text.delta') {
+      if (!this.textStarted) {
+        this.textItemId = stringValue(payload.item_id) ?? this.textItemId;
+        this.textOutputIndex = typeof payload.output_index === 'number' ? payload.output_index : 0;
+      } else if (payload.item_id && payload.item_id !== this.textItemId) {
+        return this.fail('Multiple text items in a malformed upstream stream are not supported');
+      }
+      return this.emitTextDelta(typeof payload.delta === 'string' ? payload.delta : '');
+    }
+    if (type === 'response.completed') {
+      this.completedResponse = isRecord(payload.response) ? payload.response : null;
+      if (!this.fullText) this.fullText = stringValue(this.completedResponse?.output_text) ?? '';
+      return this.finishRepairedTextStream();
+    }
+    if (type === 'response.failed' || type === 'response.incomplete' || type === 'error') {
+      this.completed = true;
+      this.failed = true;
+    }
+    if (type === 'response.output_item.done' && typeof payload.output_index === 'number') {
+      this.otherOutput.set(payload.output_index, payload.item);
+    }
+    // The repaired message lifecycle is emitted once, but other output items
+    // (especially function calls) must retain their upstream identifiers.
+    if (payload.item_id === this.textItemId || (isRecord(payload.item) && payload.item.id === this.textItemId)) return [];
+    return [responsesSSEEvent(type ?? 'error', {
+      ...payload,
+      ...(isRecord(payload.response) ? { response: { ...payload.response, id: this.responseId } } : {}),
+    })];
+  }
+
+  private trackNativePayload(payload: Record<string, unknown> | null): void {
+    if (isRecord(payload?.response) && typeof payload.response.id === 'string') this.responseId = payload.response.id;
+    const type = payload?.type;
+    if (type === 'response.completed' || type === 'response.failed' || type === 'response.incomplete' || type === 'error') {
+      this.passthroughCompleted = true;
+      this.failed = type !== 'response.completed';
+    }
+  }
+
+  fail(message: string): string[] {
+    if (this.completed || this.passthroughCompleted) return [];
+    this.completed = true;
+    this.failed = true;
+    return [responsesSSEEvent('response.failed', {
+      response: {
+        ...responseObjectWithId(this.responseId, this.model, 'in_progress', []),
+        status: 'failed',
+        error: { code: 'upstream_stream_error', message },
+      },
+    })];
+  }
+
+  private emitTextDelta(delta: string): string[] {
+    if (!delta) return [];
+    this.fullText += delta;
+    const events = this.ensureTextStarted();
+    events.push(responsesSSEEvent('response.output_text.delta', {
+      item_id: this.textItemId,
+      output_index: this.textOutputIndex,
+      content_index: 0,
+      delta,
+    }));
+    return events;
+  }
+
+  private ensureTextStarted(): string[] {
+    const events: string[] = [];
+    if (!this.responseStarted) {
+      this.responseStarted = true;
+      const response = responseObjectWithId(this.responseId, this.model, 'in_progress', []);
+      events.push(
+        responsesSSEEvent('response.created', { response }),
+        responsesSSEEvent('response.in_progress', { response }),
+      );
+    }
+    if (this.textStarted) return events;
+
+    this.textStarted = true;
+    events.push(
+      responsesSSEEvent('response.output_item.added', {
+        output_index: this.textOutputIndex,
+        item: {
+          id: this.textItemId,
+          type: 'message',
+          status: 'in_progress',
+          role: 'assistant',
+          content: [],
+        },
+      }),
+      responsesSSEEvent('response.content_part.added', {
+        item_id: this.textItemId,
+        output_index: this.textOutputIndex,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      }),
+    );
+    return events;
+  }
+
+  private finishRepairedTextStream(): string[] {
+    if (this.completed) return [];
+    this.completed = true;
+    const events = this.ensureTextStarted();
+    const doneItem = messageOutputItemWithId(this.textItemId, this.fullText);
+    const output = Array.isArray(this.completedResponse?.output)
+      ? [...this.completedResponse.output]
+      : [...this.otherOutput.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+    const textIndex = output.findIndex((item) => isRecord(item) && item.id === this.textItemId);
+    if (textIndex >= 0) output[textIndex] = doneItem;
+    else output.splice(this.textOutputIndex, 0, doneItem);
+    events.push(
+      responsesSSEEvent('response.output_text.done', {
+        item_id: this.textItemId,
+        output_index: this.textOutputIndex,
+        content_index: 0,
+        text: this.fullText,
+      }),
+      responsesSSEEvent('response.content_part.done', {
+        item_id: this.textItemId,
+        output_index: this.textOutputIndex,
+        content_index: 0,
+        part: { type: 'output_text', text: this.fullText, annotations: [] },
+      }),
+      responsesSSEEvent('response.output_item.done', {
+        output_index: this.textOutputIndex,
+        item: doneItem,
+      }),
+      responsesSSEEvent('response.completed', {
+        response: {
+          ...(this.completedResponse ?? {}),
+          ...responseObjectWithId(this.responseId, this.model, 'completed', output),
+          output_text: this.fullText,
+        },
+      }),
+    );
+    return events;
+  }
+
+  finishAfterUpstreamClose(): string[] {
+    return this.finish();
+  }
+}
+
 export class ResponsesSSEAdapter {
   private readonly responseId = `resp_${crypto.randomUUID()}`;
   private readonly textItemId = `msg_${crypto.randomUUID()}`;
@@ -59,6 +270,9 @@ export class ResponsesSSEAdapter {
   private fullText = '';
   private readonly toolStates = new Map<number, ToolStreamState>();
   private readonly completedItems: unknown[] = [];
+  private terminalSeen = false;
+  private finished = false;
+  failed = false;
 
   constructor(
     private readonly apiFormat: Provider['apiFormat'],
@@ -73,9 +287,13 @@ export class ResponsesSSEAdapter {
   }
 
   finish(): string[] {
+    if (this.finished) return [];
     const events: string[] = [];
     if (this.lineBuffer.trim()) events.push(...this.processSSELine(this.lineBuffer));
     this.lineBuffer = '';
+    if (this.finished) return events;
+    if (!this.terminalSeen) return [...events, ...this.fail('Upstream stream ended without a terminal event')];
+    this.finished = true;
     events.push(...this.finishTextIfNeeded());
     events.push(...this.finishToolStates());
     events.push(...this.emitResponseStart());
@@ -85,14 +303,34 @@ export class ResponsesSSEAdapter {
     return events;
   }
 
+  fail(message: string): string[] {
+    if (this.finished) return [];
+    this.finished = true;
+    this.failed = true;
+    return [...this.emitResponseStart(), responsesSSEEvent('response.failed', {
+      response: {
+        ...responseObjectWithId(this.responseId, this.model, 'in_progress', []),
+        status: 'failed',
+        error: { code: 'upstream_stream_error', message },
+      },
+    })];
+  }
+
   private processSSELine(rawLine: string): string[] {
+    if (this.finished) return [];
     const line = rawLine.trim();
     if (!line.startsWith('data:')) return [];
     const jsonText = line.slice(5).trim();
-    if (!jsonText || jsonText === '[DONE]') return [];
+    if (!jsonText) return [];
+    if (jsonText === '[DONE]') {
+      this.terminalSeen = true;
+      return [];
+    }
 
     const payload = jsonObjectFromString(jsonText);
     if (!payload) return [];
+    if (payload.error || payload.type === 'error') return this.fail('Upstream returned a streaming error');
+    if (payload.type === 'message_stop') this.terminalSeen = true;
     if (this.apiFormat === 'chat_completions') return this.processChatPayload(payload);
     if (this.apiFormat === 'anthropic_messages') return this.processAnthropicPayload(payload);
     return [];
@@ -100,6 +338,10 @@ export class ResponsesSSEAdapter {
 
   private processChatPayload(payload: Record<string, unknown>): string[] {
     const firstChoice = Array.isArray(payload.choices) && isRecord(payload.choices[0]) ? payload.choices[0] : null;
+    if (firstChoice?.finish_reason === 'length' || firstChoice?.finish_reason === 'content_filter') {
+      return this.fail(`Upstream stopped with ${String(firstChoice.finish_reason)}`);
+    }
+    if (firstChoice?.finish_reason === 'stop' || firstChoice?.finish_reason === 'tool_calls') this.terminalSeen = true;
     const delta = firstChoice && isRecord(firstChoice.delta) ? firstChoice.delta : null;
     if (!delta) return [];
 
@@ -125,6 +367,9 @@ export class ResponsesSSEAdapter {
     const type = stringValue(payload.type);
     const index = typeof payload.index === 'number' ? payload.index : 0;
     const events: string[] = [];
+    if (type === 'message_delta' && isRecord(payload.delta) && payload.delta.stop_reason === 'max_tokens') {
+      return this.fail('Upstream stopped at the output token limit');
+    }
 
     if (type === 'content_block_start') {
       const block = isRecord(payload.content_block) ? payload.content_block : {};
@@ -327,13 +572,18 @@ interface ToolStreamState {
 export function upstreamPathForGatewayPath(pathname: string, provider: Provider): string {
   if (pathname !== '/responses') return pathname;
 
-  if (provider.apiFormat === 'chat_completions') {
+  if (upstreamAPIFormatForProvider(provider) === 'chat_completions') {
     return openAICompatibleEndpointPath('/chat/completions', provider);
   }
-  if (provider.apiFormat === 'anthropic_messages') {
+  if (upstreamAPIFormatForProvider(provider) === 'anthropic_messages') {
     return versionedEndpointPath('/messages', provider);
   }
   return versionedEndpointPath('/responses', provider);
+}
+
+export function upstreamAPIFormatForProvider(provider: Provider): Provider['apiFormat'] {
+  if (isDeepSeekOpenAICompatibleProvider(provider)) return 'chat_completions';
+  return provider.apiFormat;
 }
 
 export function upstreamBaseURLForProvider(provider: Provider): string {
@@ -354,28 +604,28 @@ export function upstreamBaseURLForProvider(provider: Provider): string {
 }
 
 export function upstreamRequestBodyFromResponsesBody(body: Buffer, provider: Provider, forceStream: boolean): UpstreamRequestBody {
+  provider = providerForRequest(provider, body);
   const responsesBody = requestBodyByApplyingActiveModel(body, provider, forceStream);
-  const upstreamModel = requestedModelFromBody(responsesBody) ?? providerSelectedCatalogModel(provider);
   const clientWantsStream = requestBodyWantsStream(body);
 
-  if (provider.apiFormat === 'chat_completions') {
+  if (upstreamAPIFormatForProvider(provider) === 'chat_completions') {
     return {
-      body: chatCompletionsBodyFromResponsesBody(responsesBody, provider, forceStream),
-      upstreamModel,
+      body: chatCompletionsBodyFromResponsesBody(responsesBody.body, provider, forceStream),
+      upstreamModel: responsesBody.upstreamModel,
       clientWantsStream,
     };
   }
-  if (provider.apiFormat === 'anthropic_messages') {
+  if (upstreamAPIFormatForProvider(provider) === 'anthropic_messages') {
     return {
-      body: anthropicMessagesBodyFromResponsesBody(responsesBody, forceStream),
-      upstreamModel,
+      body: anthropicMessagesBodyFromResponsesBody(responsesBody.body, forceStream),
+      upstreamModel: responsesBody.upstreamModel,
       clientWantsStream,
     };
   }
 
   return {
-    body: responsesBody,
-    upstreamModel,
+    body: responsesBody.body,
+    upstreamModel: responsesBody.upstreamModel,
     clientWantsStream,
   };
 }
@@ -404,14 +654,14 @@ export function upstreamRequestBodyFromGenericBody(body: Buffer, provider: Provi
 export function adaptUpstreamResponseToResponses(data: Buffer, provider: Provider, originalPath: string, model: string): AdaptedUpstreamResponse {
   if (originalPath !== '/responses') return { body: data, contentType: 'application/json' };
 
-  if (provider.apiFormat === 'chat_completions') {
+  if (upstreamAPIFormatForProvider(provider) === 'chat_completions') {
     return {
       body: jsonBuffer(responseObjectWithOutputItems(outputItemsFromChatCompletionsData(data), model)),
       contentType: 'application/json',
     };
   }
 
-  if (provider.apiFormat === 'anthropic_messages') {
+  if (upstreamAPIFormatForProvider(provider) === 'anthropic_messages') {
     return {
       body: jsonBuffer(responseObjectWithOutputItems(outputItemsFromAnthropicMessagesData(data), model)),
       contentType: 'application/json',
@@ -453,17 +703,45 @@ export function usageFromResponseBody(body: Buffer): ParsedUsage {
   return {};
 }
 
-function requestBodyByApplyingActiveModel(body: Buffer, provider: Provider, forceStream: boolean): Buffer {
+function requestBodyByApplyingActiveModel(body: Buffer, provider: Provider, forceStream: boolean): AppliedActiveModelBody {
   const payload = jsonObjectFromBody(body);
-  if (!payload) return body;
+  if (!payload) {
+    return {
+      body,
+      upstreamModel: providerSelectedModel(provider)?.model.trim() || providerSelectedCatalogModel(provider),
+    };
+  }
 
-  applyActiveModelToPayload(payload, provider);
+  const upstreamModel = applyActiveModelToPayload(payload, provider);
+  const model = providerSelectedModel(provider);
+  const format = upstreamAPIFormatForProvider(provider);
+  if (format !== 'responses' && (payload.previous_response_id || payload.conversation)) {
+    throw new GatewayCompatibilityError('This model requires full conversation history in input; upstream response/conversation IDs cannot be converted across protocols.');
+  }
+  if (model?.supportsReasoning === false) {
+    delete payload.reasoning;
+    delete payload.reasoning_effort;
+  }
+  if (!providerModelSupportsImages(provider, model) && hasMediaInput(payload.input)) {
+    throw new GatewayCompatibilityError('This model or protocol adapter cannot accept image/file history. Use a compatible model or remove the attachment explicitly.');
+  }
   if (forceStream || payload.stream === true) payload.stream = forceStream;
   removeUnsupportedCodexMetadata(payload);
   normalizeOutputTokenLimitsForUpstream(payload, provider);
   normalizeResponsesInputForUpstream(payload);
   normalizeResponsesToolsForUpstream(payload, provider);
-  return jsonBuffer(payload);
+  return {
+    body: jsonBuffer(payload),
+    upstreamModel,
+  };
+}
+
+function hasMediaInput(input: unknown): boolean {
+  if (Array.isArray(input)) return input.some(hasMediaInput);
+  if (!isRecord(input)) return false;
+  return input.type === 'input_image' || input.type === 'input_file'
+    || input.image_url !== undefined || input.file_id !== undefined || input.file_data !== undefined
+    || hasMediaInput(input.content);
 }
 
 function applyActiveModelToPayload(payload: Record<string, unknown>, provider: Provider): string {
@@ -488,10 +766,17 @@ function chatCompletionsBodyFromResponsesBody(body: Buffer, provider: Provider, 
   if (maxTokens !== undefined) converted.max_tokens = maxTokens;
   if (payload.temperature !== undefined) converted.temperature = payload.temperature;
   if (payload.top_p !== undefined) converted.top_p = payload.top_p;
+  if (providerSelectedModel(provider)?.supportsReasoning === true && isRecord(payload.reasoning)) {
+    if (typeof payload.reasoning.effort === 'string') converted.reasoning_effort = payload.reasoning.effort;
+  }
 
   const tools = chatToolsFromResponsesTools(payload.tools);
   if (tools.length > 0) converted.tools = tools;
-  if (payload.tool_choice !== undefined) converted.tool_choice = payload.tool_choice;
+  if (payload.tool_choice !== undefined) {
+    converted.tool_choice = isRecord(payload.tool_choice) && payload.tool_choice.type === 'function'
+      ? { type: 'function', function: { name: payload.tool_choice.name } }
+      : payload.tool_choice;
+  }
   if (isDeepSeekOpenAICompatibleProvider(provider)) converted.thinking = { type: 'disabled' };
   return jsonBuffer(converted);
 }
@@ -560,8 +845,10 @@ function anthropicToolsFromResponsesTools(tools: unknown): unknown[] {
 
 function chatMessagesFromResponsesPayload(payload: Record<string, unknown>): unknown[] {
   const input = payload.input;
-  if (typeof input === 'string') return [{ role: 'user', content: input }];
-  if (!Array.isArray(input)) return [{ role: 'user', content: 'ping' }];
+  const instructions = typeof payload.instructions === 'string' ? payload.instructions : '';
+  const messages: unknown[] = instructions ? [{ role: 'system', content: instructions }] : [];
+  if (typeof input === 'string') return [...messages, { role: 'user', content: input }];
+  if (!Array.isArray(input)) throw new GatewayCompatibilityError('Full conversation input is required for Chat Completions.');
 
   const toolOutputByCallId = new Map<string, Record<string, unknown>>();
   for (const item of input) {
@@ -570,7 +857,6 @@ function chatMessagesFromResponsesPayload(payload: Record<string, unknown>): unk
     if (callId) toolOutputByCallId.set(callId, item);
   }
 
-  const messages: unknown[] = [];
   for (const item of input) {
     if (!isRecord(item)) continue;
     const type = stringValue(item.type) ?? '';
@@ -582,7 +868,7 @@ function chatMessagesFromResponsesPayload(payload: Record<string, unknown>): unk
       const callId = stringValue(item.call_id) ?? stringValue(item.id) ?? `call_${crypto.randomUUID()}`;
       const name = stringValue(item.name);
       const toolOutput = toolOutputByCallId.get(callId);
-      if (!name || !toolOutput) continue;
+      if (!name || !toolOutput) throw new GatewayCompatibilityError('Tool history is incomplete: each function call requires its name and matching output.');
       messages.push({
         role: 'assistant',
         content: '',
@@ -609,7 +895,8 @@ function chatMessagesFromResponsesPayload(payload: Record<string, unknown>): unk
     messages.push({ role, content });
   }
 
-  return messages.length > 0 ? messages : [{ role: 'user', content: 'ping' }];
+  if (!messages.length) throw new GatewayCompatibilityError('Conversation contains no supported messages.');
+  return messages;
 }
 
 function anthropicMessagesFromResponsesPayload(payload: Record<string, unknown>, systemParts: string[]): unknown[] {
@@ -661,7 +948,17 @@ function anthropicMessagesFromResponsesPayload(payload: Record<string, unknown>,
     messages.push({ role: role === 'assistant' ? 'assistant' : 'user', content });
   }
 
-  return messages.length > 0 ? messages : [{ role: 'user', content: 'ping' }];
+  if (!messages.length) throw new GatewayCompatibilityError('Conversation contains no supported messages.');
+  const merged: Array<{ role: string; content: unknown[] }> = [];
+  for (const message of messages) {
+    if (!isRecord(message)) continue;
+    const role = String(message.role);
+    const content = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }];
+    const previous = merged.at(-1);
+    if (previous?.role === role) previous.content.push(...content);
+    else merged.push({ role, content });
+  }
+  return merged;
 }
 
 function outputItemsFromChatCompletionsData(data: Buffer): unknown[] {
@@ -779,6 +1076,17 @@ function functionCallOutputItem(input: {
 
 function responsesSSEEvent(type: string, payload: Record<string, unknown>): string {
   return `event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`;
+}
+
+function ssePayloadFromBlock(block: string): Record<string, unknown> | null {
+  const data = block
+    .split('\n')
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n')
+    .trim();
+  if (!data || data === '[DONE]') return null;
+  return jsonObjectFromString(data);
 }
 
 function chatRoleFromResponsesRole(role: string): 'system' | 'assistant' | 'tool' | 'user' {

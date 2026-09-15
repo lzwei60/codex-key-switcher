@@ -1,6 +1,6 @@
 {
   "name": "@codex-key-switcher/web",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "type": "module",
   "scripts": {

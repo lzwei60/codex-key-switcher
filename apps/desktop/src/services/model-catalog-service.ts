@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { providerCatalogSlug, modelCustomName } from '@codex-key-switcher/core';
+import { providerCatalogSlug, modelCustomName, providerModelSupportsImages } from '@codex-key-switcher/core';
 import type { ConnectionMode, Provider, ProviderModel } from '@codex-key-switcher/shared';
 import type { AppSettingsStore } from './app-settings-store';
 import { writeJsonFile } from './json-file';
@@ -35,7 +35,7 @@ export class ModelCatalogService {
 
   async writeForProvider(provider: Provider, mode: ConnectionMode): Promise<string> {
     const catalogPath = path.join(this.appDataDirectory, catalogDirectoryName, currentCatalogFileName);
-    const cached = await this.readCachedModels(provider);
+    const cached = await this.readCachedModels();
     const models = provider.models.map((model, index) => this.catalogModel(provider, model, mode, index, cached));
 
     if (!models.length) throw new Error('当前供应商没有可写入 Codex 的模型。');
@@ -51,7 +51,7 @@ export class ModelCatalogService {
     return catalogPath;
   }
 
-  private async readCachedModels(provider: Provider): Promise<{
+  private async readCachedModels(): Promise<{
     clientVersion: string;
     etag?: string;
     templateModels: Record<string, unknown>[];
@@ -71,7 +71,7 @@ export class ModelCatalogService {
         ? payload.client_version
         : 'codex-key-switcher',
       ...(typeof payload.etag === 'string' ? { etag: payload.etag } : {}),
-      templateModels: firstTemplate ? templateModels : [fallbackModelTemplate(provider)],
+      templateModels: firstTemplate ? templateModels : [fallbackModelTemplate()],
     };
   }
 
@@ -84,10 +84,13 @@ export class ModelCatalogService {
   ): Record<string, unknown> {
     const upstreamModel = model.model.trim();
     const displayName = modelCustomName(model);
-    const template = cached.templateModels[index % cached.templateModels.length] ?? fallbackModelTemplate(provider);
+    const template = cached.templateModels.find((candidate) => candidate.slug === upstreamModel)
+      ?? fallbackModelTemplate();
     const slug = mode === 'direct_provider' ? upstreamModel : providerCatalogSlug(provider, model);
+    const supportsImages = providerModelSupportsImages(provider, model);
 
     return {
+      ...fallbackModelTemplate(),
       ...template,
       slug,
       display_name: displayName,
@@ -95,6 +98,12 @@ export class ModelCatalogService {
       visibility: 'list',
       supported_in_api: true,
       priority: Math.max(1, 100 - index),
+      ...(model.supportsReasoning === false ? {
+        default_reasoning_level: 'none',
+        supported_reasoning_levels: [{ effort: 'none', description: 'Reasoning parameters disabled' }],
+        supports_reasoning_summaries: false,
+      } : {}),
+      input_modalities: supportsImages ? ['text', 'image'] : ['text'],
     };
   }
 
@@ -103,11 +112,15 @@ export class ModelCatalogService {
   }
 }
 
-function fallbackModelTemplate(provider: Provider): Record<string, unknown> {
+export function completeModelCatalogEntry(model: Record<string, unknown>): Record<string, unknown> {
+  return { ...fallbackModelTemplate(), ...model };
+}
+
+function fallbackModelTemplate(): Record<string, unknown> {
   return {
-    slug: provider.models[0]?.model.trim() || 'gpt-4.1',
-    display_name: provider.models[0] ? modelCustomName(provider.models[0]) : 'Codex model',
-    description: provider.name,
+    slug: 'gpt-4.1',
+    display_name: 'Codex model',
+    description: '',
     default_reasoning_level: 'medium',
     supported_reasoning_levels: [
       { effort: 'low', description: 'Fast responses with lighter reasoning' },
@@ -127,6 +140,12 @@ function fallbackModelTemplate(provider: Provider): Record<string, unknown> {
     default_verbosity: 'low',
     apply_patch_tool_type: 'freeform',
     web_search_tool_type: 'text_and_image',
+    truncation_policy: { mode: 'tokens', limit: 10000 },
+    base_instructions: '',
+    model_messages: null,
+    experimental_supported_tools: [],
+    supports_image_detail_original: false,
+    effective_context_window_percent: 95,
     supports_parallel_tool_calls: true,
     input_modalities: ['text'],
     supports_search_tool: true,

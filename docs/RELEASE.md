@@ -18,7 +18,7 @@ The in-app updater selects the installer by file name. Do not rename release ass
 ## Versioning
 
 1. Update `version` in `apps/desktop/package.json`.
-2. Use a matching Git tag, for example `v1.0.3`.
+2. Use a matching Git tag, for example `v1.0.4`.
 3. The GitHub Release marked as latest must use that same tag.
 
 The update check compares `app.getVersion()` with the latest GitHub Release tag or release name after removing a leading `v`.
@@ -44,7 +44,7 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.3`.
+4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.4`.
 5. Upload the four platform asset groups from the `release/` directory.
 6. Mark the GitHub Release as the latest release.
 7. Install the previous desktop version and verify Settings -> Updates:
@@ -64,6 +64,61 @@ The current project intentionally ships unsigned installers. This means:
 - Release notes should tell users that the installer is unsigned and must be downloaded from this repository's GitHub Releases page.
 
 Signing and notarization should be added before treating this as a production-grade public distribution flow.
+
+## v1.0.4 Release Notes
+
+### Release Scope
+
+`v1.0.4` is a model capability, protocol adaptation, and reliability release for `v1.0.3`. It adds per-model protocol selection within one provider, hardens Codex model Catalog generation, fixes incomplete streaming and gateway timeout behavior, and completes the provider configuration and bilingual UI improvements.
+
+### New Features
+
+- Configure an independent API format per model: Responses, Chat Completions, or Anthropic Messages.
+- Configure per-model reasoning and image-input capabilities, with explicit inherit-from-provider options.
+- Fetch upstream model lists, check individual models, and warn before saving models that have not been checked.
+- Route each request to the selected model within the current provider based on the request `model` value.
+- Generate and complete a fuller Codex model Catalog so missing fields are less likely to break `model/list` or `thread/start` compatibility.
+- Add regression coverage for protocol conversion, model Catalog validation, timeouts, interrupted streams, and cross-model routing.
+- Add bilingual labels and runtime messages across the tray menu, diagnostics, providers, settings, and usage views.
+
+### Fixes
+
+- Fixed native Responses streams that start directly with text deltas or close early. The gateway now emits `response.failed` for abnormal termination instead of fabricating `response.completed`.
+- Fixed system instructions, tool-call history, and full message history conversion for Chat Completions and Anthropic Messages.
+- Fixed requests that only contain `previous_response_id` or `conversation` across protocols; they now fail with a clear 400 before contacting the upstream instead of silently losing history.
+- Fixed forwarding of image or file history to models that cannot accept it; unsupported attachments are rejected explicitly.
+- Fixed missing phase-specific timeouts for upstream headers, ordinary requests, idle streams, and request-body reads. Timeouts are recorded as failures with the appropriate status.
+- Fixed false client-disconnect detection after a request body was read normally.
+- Fixed protocol entry points, model mapping, and request-header handling for DeepSeek and similar OpenAI-compatible upstreams.
+- Fixed duplicate model aliases, loss of model capability options, and stale “checked” state after a model was edited.
+
+### Improvements
+
+- Reworked the model editor into grouped basic and advanced sections, with a single-column layout on narrow screens.
+- Localized runtime errors in the providers, diagnostics, updates, and usage views instead of exposing internal English messages directly.
+- Improved model Catalog template matching to reuse cached templates by upstream model name and use a complete fallback template when no match exists.
+- Clarified default-model switch notifications so they do not imply that an existing session will hot-switch its explicitly selected model.
+- Improved streaming backpressure, client-disconnect cleanup, and failure recording to reduce leaked long-lived connections and false successes.
+
+### Upgrade Notes
+
+- Existing providers, credentials, usage data, and connection settings are preserved. Optional model capability fields in older configurations continue to use provider defaults.
+- Reload Codex's model list after changing a provider, model, or connection mode. The switcher's default model does not override a model explicitly selected by an existing session.
+- Chat Completions and Anthropic models require local gateway mode. Direct provider mode requires all models to resolve to Responses.
+- Cross-protocol continuation requires the full visible conversation history; the adapter does not attempt to reconstruct history from a Responses-only response ID.
+- Installers are still unsigned and not notarized. Download them only from this repository's GitHub Releases page.
+
+### Installers
+
+- macOS Apple Silicon: `Codex-Key-Switcher-1.0.4-arm64.dmg`
+- macOS Intel: `Codex-Key-Switcher-1.0.4-x64.dmg`
+- Windows x64: `Codex-Key-Switcher-Setup-1.0.4-x64.exe`
+- Linux x64: `Codex-Key-Switcher-1.0.4-x86_64.AppImage` and `Codex-Key-Switcher-1.0.4-amd64.deb`
+
+### Known Limitations
+
+- Cross-protocol adapters currently guarantee text and function-tool history. Image or file history on Chat Completions or Anthropic paths is rejected explicitly.
+- Windows and Linux installers can be cross-built on the macOS host, but target-system installation, launch, and upgrade smoke tests are still required before public distribution.
 
 ## v1.0.3 Release Notes
 
