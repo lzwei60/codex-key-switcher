@@ -8,6 +8,7 @@ import { PageHeader } from '../layout/AppShell';
 import type { SettingsTabKey } from '../../types/navigation';
 import { useAppPreferences } from '../../lib/app-preferences';
 import { getDesktopApi } from '../../lib/desktop-api';
+import { localizeRuntimeMessage } from '../../lib/localize';
 
 const { Text } = Typography;
 
@@ -59,7 +60,7 @@ function UsageSettings() {
         if (mounted) form.setFieldsValue(settings);
       })
       .catch((error) => {
-        if (mounted) message.error(error instanceof Error ? error.message : text('读取统计设置失败', 'Failed to read usage settings'));
+        if (mounted) message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('读取统计设置失败', 'Failed to read usage settings'));
       })
       .finally(() => {
         if (mounted) setLoading(false);
@@ -76,7 +77,7 @@ function UsageSettings() {
       form.setFieldsValue(settings);
       message.success(text('统计与隐私设置已保存', 'Usage and privacy settings saved'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('保存失败', 'Save failed'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('保存失败', 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -154,10 +155,10 @@ function UpdateSettings() {
       } else if (result.status === 'not-available') {
         message.success(text('当前已是最新版本', 'You are up to date'));
       } else if (result.errorMessage) {
-        message.warning(result.errorMessage);
+        message.warning(localizeRuntimeMessage(result.errorMessage, text));
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('检查更新失败', 'Failed to check for updates'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('检查更新失败', 'Failed to check for updates'));
     } finally {
       setChecking(false);
     }
@@ -173,7 +174,7 @@ function UpdateSettings() {
       await getDesktopApi().app.openUpdateDownload(url);
       message.success(text('已打开链接', 'Link opened'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('打开链接失败', 'Failed to open link'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('打开链接失败', 'Failed to open link'));
     } finally {
       setOpening(false);
     }
@@ -186,7 +187,7 @@ function UpdateSettings() {
       await getDesktopApi().app.openUpdateDownload(updateInfo.downloadUrl);
       message.success(text('已打开下载链接', 'Download link opened'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('打开下载链接失败', 'Failed to open download link'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('打开下载链接失败', 'Failed to open download link'));
     } finally {
       setOpeningDownload(false);
     }
@@ -322,7 +323,7 @@ function GeneralSettings() {
       });
       message.success(text('通用设置已保存', 'General settings saved'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('保存失败', 'Save failed'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('保存失败', 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -337,7 +338,7 @@ function GeneralSettings() {
       form.setFieldsValue({ codexConfigDirectory: selected.directory });
       message.success(text('Codex 配置目录已更新', 'Codex config directory updated'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('选择目录失败', 'Failed to choose directory'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('选择目录失败', 'Failed to choose directory'));
     } finally {
       setChoosingDirectory(false);
     }
@@ -406,7 +407,7 @@ function GeneralSettings() {
           <Switch disabled={settings?.platform !== 'darwin'} loading={loading} />
         </Form.Item>
         <Form.Item label={text('语言', 'Language')} name="language">
-          <Segmented options={[{ label: '中文', value: 'zh-Hans' }, { label: 'English', value: 'en' }]} />
+          <Segmented options={[{ label: text('中文', 'Chinese'), value: 'zh-Hans' }, { label: 'English', value: 'en' }]} />
         </Form.Item>
         <Form.Item label={text('外观主题', 'Appearance')} name="theme">
           <Segmented options={[
@@ -476,7 +477,7 @@ function RouteSettings() {
         `${modeName} ${statusText}, and has been written to Codex config. Please restart Codex.`,
       ));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('保存失败', 'Save failed'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('保存失败', 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -491,10 +492,10 @@ function RouteSettings() {
         listenPort: Number(values.listenPort),
         allowLANListen: Boolean(values.allowLANListen),
       });
-      if (result.available) message.success(result.message);
-      else message.warning(result.message);
+      if (result.available) message.success(localizeRuntimeMessage(result.message, text));
+      else message.warning(localizeRuntimeMessage(result.message, text));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : text('端口检测失败', 'Port check failed'));
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('端口检测失败', 'Port check failed'));
     } finally {
       setChecking(false);
     }

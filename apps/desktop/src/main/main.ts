@@ -41,6 +41,7 @@ import { AppSettingsStore } from '../services/app-settings-store';
 import { CodexFileConfigAdapter } from '../services/codex-file-config-adapter';
 import { CredentialFileStore } from '../services/credential-file-store';
 import { LocalGatewayRuntime } from '../services/local-gateway-runtime';
+import { upstreamAPIFormatForProvider, upstreamBaseURLForProvider, upstreamPathForGatewayPath } from '../services/gateway-protocol-adapter';
 import { ModelCatalogService } from '../services/model-catalog-service';
 import { ProviderFileRepository } from '../services/provider-file-repository';
 import { UsageFileRepository } from '../services/usage-file-repository';
@@ -173,6 +174,9 @@ function createTrayIcon() {
 async function updateTrayMenu(): Promise<void> {
   if (!tray) return;
 
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
+
   const [providers, currentProvider, routeSettings] = await Promise.all([
     getProviderService().list().catch(() => [] as Provider[]),
     getProviderService().current().catch(() => null),
@@ -180,8 +184,8 @@ async function updateTrayMenu(): Promise<void> {
   ]);
   const currentModel = currentProvider ? providerSelectedDisplayModel(currentProvider) : gatewayStatusCache.currentModel;
   const providerLabel = currentProvider?.name
-    ? `CK: ${currentProvider.name} / ${currentModel || '未选择模型'}`
-    : 'CK: 未选择供应商';
+    ? `CK: ${currentProvider.name}`
+    : `CK: ${text('未选择供应商', 'No provider selected')}`;
   const isDirectMode = routeSettings.mode === 'direct_provider';
 
   tray.setToolTip(providerLabel);
@@ -196,34 +200,21 @@ async function updateTrayMenu(): Promise<void> {
         label: `${provider.name} (${formatApiFormat(provider.apiFormat)})`,
         type: 'radio' as const,
       }))
-    : [{ enabled: false, label: '暂无供应商' }];
-
-  const modelSubmenu = currentProvider?.models.length
-    ? currentProvider.models.map((model) => {
-        const label = model.customName || model.model;
-        return {
-          checked: label === currentProvider.selectedModel || model.model === currentProvider.selectedModel,
-          click: () => void switchTrayModel(currentProvider.id, label),
-          label: model.customName === model.model ? model.model : `${model.customName} -> ${model.model}`,
-          type: 'radio' as const,
-        };
-      })
-    : [{ enabled: false, label: '暂无模型' }];
+    : [{ enabled: false, label: text('暂无供应商', 'No providers') }];
 
   tray.setContextMenu(Menu.buildFromTemplate([
-    { enabled: false, label: `连接模式：${connectionModeLabel(routeSettings.mode)}` },
-    { enabled: false, label: `${isDirectMode ? '上游地址' : '路由地址'}：${gatewayStatusCache.endpoint}` },
-    { enabled: false, label: `运行状态：${gatewayStatusCache.running ? '运行中' : routeSettings.enabled ? isDirectMode ? '直连已配置' : '已启用未运行' : '已停止'}` },
-    { enabled: false, label: `当前供应商：${currentProvider?.name ?? '未选择'}` },
-    { enabled: false, label: `当前模型：${currentModel ?? '未选择'}` },
+    { enabled: false, label: `${text('连接模式', 'Connection mode')}: ${connectionModeLabel(routeSettings.mode, language)}` },
+    { enabled: false, label: `${isDirectMode ? text('上游地址', 'Upstream URL') : text('路由地址', 'Gateway URL')}: ${gatewayStatusCache.endpoint}` },
+    { enabled: false, label: `${text('运行状态', 'Status')}: ${gatewayStatusCache.running ? text('运行中', 'Running') : routeSettings.enabled ? isDirectMode ? text('直连已配置', 'Direct provider configured') : text('已启用未运行', 'Enabled but not running') : text('已停止', 'Stopped')}` },
+    { enabled: false, label: `${text('当前供应商', 'Current provider')}: ${currentProvider?.name ?? text('未选择', 'Not selected')}` },
+    { enabled: false, label: `${text('默认模型', 'Default model')}: ${currentModel ?? text('未选择', 'Not selected')}` },
     { type: 'separator' },
-    { label: '供应商', submenu: providerSubmenu },
-    { label: '模型', submenu: modelSubmenu },
+    { label: text('供应商', 'Providers'), submenu: providerSubmenu },
     { type: 'separator' },
-    { label: '打开主界面', click: () => void createWindow() },
-    { label: isDirectMode ? routeSettings.enabled ? '停用直连配置' : '启用直连配置' : gatewayStatusCache.running ? '停止本地路由' : '启动本地路由', click: () => void toggleGateway() },
+    { label: text('打开主界面', 'Open main window'), click: () => void createWindow() },
+    { label: isDirectMode ? routeSettings.enabled ? text('停用直连配置', 'Disable direct configuration') : text('启用直连配置', 'Enable direct configuration') : gatewayStatusCache.running ? text('停止本地路由', 'Stop local gateway') : text('启动本地路由', 'Start local gateway'), click: () => void toggleGateway() },
     { type: 'separator' },
-    { label: '退出', click: () => void quitApplication() },
+    { label: text('退出', 'Quit'), click: () => void quitApplication() },
   ]));
 }
 
@@ -248,15 +239,13 @@ async function switchTrayProvider(providerId: string): Promise<void> {
   }
 }
 
-async function switchTrayModel(providerId: string, model: string): Promise<void> {
-  await switchSelectedModelTransactionally(providerId, model);
-}
-
 async function notifyConversationSwitch(input: {
   previousProvider?: Provider | null;
   nextProvider?: Provider | null;
   switchedTarget: 'provider' | 'model';
 }): Promise<void> {
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
   const routeSettings = await getRouteSettings();
   const isDirectMode = routeSettings.mode === 'direct_provider';
   const providerChanged = Boolean(
@@ -264,13 +253,17 @@ async function notifyConversationSwitch(input: {
     && input.nextProvider
     && input.previousProvider.id !== input.nextProvider.id,
   );
-  const switchedTarget = input.switchedTarget === 'provider' ? '供应商' : '模型';
-  const title = '建议打开新会话';
-  const message = `${switchedTarget}已切换`;
-  const detail = directSwitchDetail({
+  const switchedTarget = input.switchedTarget === 'provider' ? text('供应商', 'Provider') : text('模型', 'Model');
+  const modelOnlyInGateway = !isDirectMode && input.switchedTarget === 'model';
+  const title = modelOnlyInGateway ? text('默认模型已更新', 'Default model updated') : text('建议打开新会话', 'A new session is recommended');
+  const message = modelOnlyInGateway ? text('默认模型已切换', 'Default model switched') : text(`${switchedTarget}已切换`, `${switchedTarget} switched`);
+  const detail = modelOnlyInGateway
+    ? text('默认模型不会覆盖已有会话明确指定的模型。请在客户端选择已加载的目标模型，下一轮由本地路由转发；跨协议需携带完整历史。', 'The default model does not override a model explicitly selected by an existing session. Select the loaded target model in the client; the next turn will be routed locally with the full history for cross-protocol requests.')
+    : directSwitchDetail({
     isDirectMode,
     providerChanged,
     nextProvider: input.nextProvider,
+    language,
   });
   if (Notification.isSupported()) {
     new Notification({
@@ -286,7 +279,7 @@ async function notifyConversationSwitch(input: {
     type: 'info',
     title,
     message,
-    buttons: ['知道了'],
+    buttons: [text('知道了', 'OK')],
     defaultId: 0,
     noLink: true,
   };
@@ -299,39 +292,44 @@ function directSwitchDetail(input: {
   isDirectMode: boolean;
   providerChanged: boolean;
   nextProvider: Provider | null | undefined;
+  language?: AppPreferences['language'];
 }): string {
+  const language = input.language ?? 'zh-Hans';
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
   if (!input.isDirectMode) {
-    return '模型 UI 列表已更新到配置文件。请重启 Codex 以加载新的模型列表；重启后已有会话不会继续运行。';
+    return text('模型 UI 列表已更新到配置文件。请重启 Codex 以加载新的模型列表；重启后已有会话不会继续运行。', 'The model UI list was updated in the configuration. Restart Codex to load it; existing sessions will not continue after the restart.');
   }
 
   const target = input.nextProvider
     ? `${input.nextProvider.name} / ${providerSelectedDisplayModel(input.nextProvider)}`
-    : '新供应商配置';
+    : text('新供应商配置', 'the new provider configuration');
 
   if (input.providerChanged) {
-    return `直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和直连配置。`;
+    return text(`直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和直连配置。`, `Direct provider mode was written for "${target}". Restart Codex to load the new model UI list and direct configuration.`);
   }
 
-  return `直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和默认模型。`;
+  return text(`直连模式已写入「${target}」。请重启 Codex 以加载新的模型 UI 列表和默认模型。`, `Direct provider mode was written for "${target}". Restart Codex to load the new model UI list and default model.`);
 }
 
 async function notifyTrayProviderSwitchFailure(providerId: string, error: unknown): Promise<void> {
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
   const provider = (await getProviderService().list().catch(() => [] as Provider[]))
     .find((item) => item.id === providerId);
-  const reason = error instanceof Error ? error.message : '供应商切换失败。';
+  const reason = error instanceof Error ? localizeMainMessage(error.message, language) : text('供应商切换失败。', 'Provider switch failed.');
   const isChatProvider = provider?.apiFormat === 'chat_completions';
   const message = provider
-    ? `供应商「${provider.name}」未切换。`
-    : '供应商未切换。';
+    ? text(`供应商「${provider.name}」未切换。`, `Provider "${provider.name}" was not switched.`)
+    : text('供应商未切换。', 'Provider was not switched.');
   const detail = isChatProvider
-    ? '当前处于直连供应商模式，Chat Completions 格式必须通过本地路由完成协议转换。请切换到本地路由模式，或选择 Responses 格式供应商。'
+    ? text('当前处于直连供应商模式，Chat Completions 格式必须通过本地路由完成协议转换。请切换到本地路由模式，或选择 Responses 格式供应商。', 'Direct provider mode is active, so Chat Completions must be converted through the local gateway. Switch to local gateway mode or choose a Responses provider.')
     : reason;
 
-  showProviderSwitchFailureMessage({ message, detail });
+  showProviderSwitchFailureMessage({ message, detail, language });
 }
 
-function showProviderSwitchFailureMessage(input: { message: string; detail: string }): void {
-  const title = '无法切换供应商';
+function showProviderSwitchFailureMessage(input: { message: string; detail: string; language: AppPreferences['language'] }): void {
+  const title = localizedText(input.language, '无法切换供应商', 'Unable to switch provider');
   if (Notification.isSupported()) {
     new Notification({
       title,
@@ -347,7 +345,7 @@ function showProviderSwitchFailureMessage(input: { message: string; detail: stri
     title,
     message: input.message,
     detail: input.detail,
-    buttons: ['知道了'],
+    buttons: [localizedText(input.language, '知道了', 'OK')],
     defaultId: 0,
     noLink: true,
   };
@@ -414,6 +412,9 @@ async function switchSelectedModelTransactionally(providerId: string, model: str
 async function notifyFirstProviderRouteAppliedIfNeeded(hadProviders: boolean): Promise<void> {
   if (hadProviders) return;
 
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
+
   const [routeSettings, providers] = await Promise.all([
     getRouteSettings(),
     getProviderService().list(),
@@ -421,22 +422,24 @@ async function notifyFirstProviderRouteAppliedIfNeeded(hadProviders: boolean): P
   if (!routeSettings.enabled || !providers.length) return;
   if (routeSettings.mode === 'direct_provider') {
     showRouteAppliedRestartMessage({
-      message: '首次配置已添加，直连供应商配置已写入 Codex。',
-      detail: '模型 UI 和直连配置在 Codex 启动时加载，请完全退出并重启 Codex。',
+      message: text('首次配置已添加，直连供应商配置已写入 Codex。', 'The first provider was added and the direct provider configuration was written to Codex.'),
+      detail: text('模型 UI 和直连配置在 Codex 启动时加载，请完全退出并重启 Codex。', 'The model UI and direct configuration load when Codex starts. Fully quit and restart Codex.'),
     });
     return;
   }
 
   showRouteAppliedRestartMessage({
-    message: '首次配置已添加，本地路由已写入 Codex 配置。',
-    detail: '模型 UI 和路由配置在 Codex 启动时加载，请完全退出并重启 Codex。',
+    message: text('首次配置已添加，本地路由已写入 Codex 配置。', 'The first provider was added and the local gateway configuration was written to Codex.'),
+    detail: text('模型 UI 和路由配置在 Codex 启动时加载，请完全退出并重启 Codex。', 'The model UI and gateway configuration load when Codex starts. Fully quit and restart Codex.'),
   });
 }
 
-function showRouteAppliedRestartMessage(input?: { message?: string; detail?: string }): void {
-  const title = '需要重启 Codex';
-  const message = input?.message ?? '本地路由已重新启用，并已写入 Codex 配置。';
-  const detail = input?.detail ?? '因为 Codex 在启动时读取配置，重新启用连接模式后，请完全退出并重启 Codex。';
+async function showRouteAppliedRestartMessage(input?: { message?: string; detail?: string }): Promise<void> {
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
+  const title = text('需要重启 Codex', 'Codex restart required');
+  const message = input?.message ?? text('本地路由已重新启用，并已写入 Codex 配置。', 'The local gateway was enabled again and written to the Codex configuration.');
+  const detail = input?.detail ?? text('因为 Codex 在启动时读取配置，重新启用连接模式后，请完全退出并重启 Codex。', 'Codex reads this configuration at startup. Fully quit and restart Codex after re-enabling the connection mode.');
 
   if (Notification.isSupported()) {
     new Notification({
@@ -452,7 +455,7 @@ function showRouteAppliedRestartMessage(input?: { message?: string; detail?: str
     type: 'info',
     title,
     message,
-    buttons: ['知道了'],
+    buttons: [text('知道了', 'OK')],
     defaultId: 0,
     noLink: true,
   };
@@ -461,10 +464,14 @@ function showRouteAppliedRestartMessage(input?: { message?: string; detail?: str
   result.catch(() => undefined);
 }
 
-function notifyConnectionToggle(mode: ConnectionMode, enabled: boolean): void {
-  const modeName = connectionModeLabel(mode);
-  showRouteAppliedRestartMessage({
-    message: `${modeName}${enabled ? '已重新启用' : '已停用'}，并已写入Codex配置。请重启Codex。`,
+async function notifyConnectionToggle(mode: ConnectionMode, enabled: boolean): Promise<void> {
+  const language = await getAppLanguage();
+  const modeName = connectionModeLabel(mode, language);
+  const message = enabled
+    ? localizedText(language, `${modeName}已重新启用，并已写入Codex配置。请重启Codex。`, `${modeName} was enabled again and written to the Codex configuration. Restart Codex.`)
+    : localizedText(language, `${modeName}已停用，并已写入Codex配置。请重启Codex。`, `${modeName} was disabled and written to the Codex configuration. Restart Codex.`);
+  await showRouteAppliedRestartMessage({
+    message,
     detail: '',
   });
 }
@@ -475,26 +482,29 @@ function formatApiFormat(value: ApiFormat): string {
   return 'Responses';
 }
 
-function connectionModeLabel(mode: ConnectionMode): string {
-  return mode === 'direct_provider' ? '直连供应商' : '本地路由';
+function connectionModeLabel(mode: ConnectionMode, language: AppPreferences['language'] = 'zh-Hans'): string {
+  return localizedText(language, mode === 'direct_provider' ? '直连供应商' : '本地路由', mode === 'direct_provider' ? 'Direct provider' : 'Local gateway');
 }
 
 async function confirmConnectionModeSwitch(previousMode: ConnectionMode, nextMode: ConnectionMode): Promise<boolean> {
   if (previousMode === nextMode) return true;
+  const language = await getAppLanguage();
   return confirmCodexRestartRequired({
-    message: '切换连接模式后需要重启 Codex。',
-    detail: `将从「${connectionModeLabel(previousMode)}」切换到「${connectionModeLabel(nextMode)}」。应用会重新写入 Codex 配置，Codex 可能继续使用旧缓存。请确认你会在切换后重启 Codex。`,
+    language,
+    message: localizedText(language, '切换连接模式后需要重启 Codex。', 'Restart Codex after switching the connection mode.'),
+    detail: localizedText(language, `将从「${connectionModeLabel(previousMode)}」切换到「${connectionModeLabel(nextMode)}」。应用会重新写入 Codex 配置，Codex 可能继续使用旧缓存。请确认你会在切换后重启 Codex。`, `The mode will change from "${connectionModeLabel(previousMode, language)}" to "${connectionModeLabel(nextMode, language)}". The Codex configuration will be rewritten and Codex may continue using its old cache. Confirm that you will restart Codex after switching.`),
   });
 }
 
-async function confirmCodexRestartRequired(input: { message: string; detail: string }): Promise<boolean> {
+async function confirmCodexRestartRequired(input: { message: string; detail: string; language?: AppPreferences['language'] }): Promise<boolean> {
+  const language = input.language ?? await getAppLanguage();
   const window = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
   const options: MessageBoxOptions = {
     type: 'warning',
-    title: '需要重启 Codex',
+    title: localizedText(language, '需要重启 Codex', 'Codex restart required'),
     message: input.message,
     detail: input.detail,
-    buttons: ['确认并继续', '取消'],
+    buttons: [localizedText(language, '确认并继续', 'Confirm and continue'), localizedText(language, '取消', 'Cancel')],
     defaultId: 0,
     cancelId: 1,
     noLink: true,
@@ -507,7 +517,11 @@ function registerIpcHandlers() {
   ipcMain.handle('app:startup-settings', () => getStartupSettings());
   ipcMain.handle('app:save-startup-settings', (_event, input: Pick<AppStartupSettings, 'openAtLogin' | 'openAsHidden'>) => saveStartupSettings(input));
   ipcMain.handle('app:preferences', () => getAppPreferences());
-  ipcMain.handle('app:save-preferences', (_event, input: AppPreferences) => saveAppPreferences(input));
+  ipcMain.handle('app:save-preferences', async (_event, input: AppPreferences) => {
+    const preferences = await saveAppPreferences(input);
+    await updateTrayMenu();
+    return preferences;
+  });
   ipcMain.handle('app:codex-config-directory', () => getCodexConfigDirectorySettings());
   ipcMain.handle('app:save-codex-config-directory', (_event, directory: string) => saveCodexConfigDirectory(directory));
   ipcMain.handle('app:choose-codex-config-directory', () => chooseCodexConfigDirectory());
@@ -515,7 +529,7 @@ function registerIpcHandlers() {
   ipcMain.handle('app:open-update-download', (_event, downloadUrl: string) => openUpdateDownload(downloadUrl));
   ipcMain.handle('providers:list', () => getProviderService().list());
   ipcMain.handle('providers:save', async (_event, input: ProviderInput) => {
-    await validateProviderInputModels(input);
+    validateProviderInputModelsLocally(input);
     const providerService = getProviderService();
     const providers = await providerService.list();
     await assertProviderSaveSupportsCurrentMode(input, providers);
@@ -1023,6 +1037,29 @@ async function saveAppPreferences(input: AppPreferences): Promise<AppPreferences
   return preferences;
 }
 
+async function getAppLanguage(): Promise<AppPreferences['language']> {
+  return normalizeAppLanguage(await getAppSettingsStore().getString('appLanguage'));
+}
+
+function localizedText(language: AppPreferences['language'], zh: string, en: string): string {
+  return language === 'en' ? en : zh;
+}
+
+function localizeMainMessage(value: string, language: AppPreferences['language']): string {
+  const message = value.trim();
+  if (language !== 'en') return message;
+  const exact: Record<string, string> = {
+    '供应商切换失败。': 'Provider switch failed.',
+    '直连供应商模式不支持 Chat Completions 格式供应商。': 'Direct provider mode does not support Chat Completions providers.',
+    '配置不存在。': 'Configuration not found.',
+    '模型不存在，无法切换。': 'Model not found; it cannot be selected.',
+  };
+  if (exact[message]) return exact[message];
+  const duplicateAlias = message.match(/^模型自定义名称重复：(.+)$/);
+  if (duplicateAlias) return `Duplicate model alias: ${duplicateAlias[1]}`;
+  return message;
+}
+
 async function getUsageSettings(): Promise<UsageSettings> {
   const raw = await getAppSettingsStore().getString('usageSettings');
   if (!raw) return { ...defaultUsageSettings };
@@ -1110,14 +1147,15 @@ function restoreScriptFilePath(): string {
 async function chooseCodexConfigDirectory(): Promise<CodexConfigDirectorySettings | null> {
   const window = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
   const current = await getCodexConfigDirectorySettings();
+  const title = localizedText(await getAppLanguage(), '选择 Codex 配置目录', 'Choose Codex config directory');
   const result = window
     ? await dialog.showOpenDialog(window, {
-        title: '选择 Codex 配置目录',
+        title,
         defaultPath: current.directory,
         properties: ['openDirectory', 'createDirectory'],
       })
     : await dialog.showOpenDialog({
-        title: '选择 Codex 配置目录',
+        title,
         defaultPath: current.directory,
         properties: ['openDirectory', 'createDirectory'],
       });
@@ -1224,22 +1262,24 @@ async function stopGatewayForQuit(): Promise<{ mode: ConnectionMode; restored: b
 }
 
 async function showQuitRestoreMessage(result: { mode: ConnectionMode; restored: boolean; error: string | null }): Promise<void> {
+  const language = await getAppLanguage();
+  const text = (zh: string, en: string) => localizedText(language, zh, en);
   const options: MessageBoxOptions = result.error
     ? {
         type: 'warning',
         title: '退出 Codex Key Switcher',
-        message: '连接服务已停止，但 Codex 配置恢复失败。',
-        detail: `${result.error}\n\n请到“诊断”页面执行恢复，或手动运行恢复脚本。恢复完成后需要完全退出并重启 Codex。`,
-        buttons: ['知道了'],
+        message: text('连接服务已停止，但 Codex 配置恢复失败。', 'The connection service stopped, but the Codex configuration could not be restored.'),
+        detail: `${localizeMainMessage(result.error, language)}\n\n${text('请到“诊断”页面执行恢复，或手动运行恢复脚本。恢复完成后需要完全退出并重启 Codex。', 'Open the Diagnostics page to restore it, or run the restore script manually. Fully quit and restart Codex after the restore is complete.')}`,
+        buttons: [text('知道了', 'OK')],
         defaultId: 0,
         noLink: true,
       }
     : {
         type: 'info',
         title: '退出 Codex Key Switcher',
-        message: result.restored ? '连接服务已停止，Codex 配置已恢复。' : '连接服务已停止，Codex 配置无需恢复。',
-        detail: '为了让 Codex 重新读取恢复后的配置，请重启 Codex。',
-        buttons: ['知道了'],
+        message: result.restored ? text('连接服务已停止，Codex 配置已恢复。', 'The connection service stopped and the Codex configuration was restored.') : text('连接服务已停止，Codex 配置无需恢复。', 'The connection service stopped; no Codex configuration restore was needed.'),
+        detail: text('为了让 Codex 重新读取恢复后的配置，请重启 Codex。', 'Restart Codex so it reloads the restored configuration.'),
+        buttons: [text('知道了', 'OK')],
         defaultId: 0,
         noLink: true,
       };
@@ -1400,7 +1440,7 @@ function normalizeConnectionMode(mode: string | null | undefined): ConnectionMod
 
 async function assertProviderSaveSupportsCurrentMode(input: ProviderInput, providers: Provider[]): Promise<void> {
   const routeSettings = await getRouteSettings();
-  if (!routeSettings.enabled || routeSettings.mode !== 'direct_provider' || input.apiFormat === 'responses') return;
+  if (!routeSettings.enabled || routeSettings.mode !== 'direct_provider' || allModelsUseResponses(input)) return;
 
   const currentProvider = await getProviderService().current();
   const inputId = input.id?.trim();
@@ -1418,11 +1458,16 @@ async function assertCurrentProviderSupportsDirectMode(): Promise<void> {
 }
 
 async function assertProviderSupportsDirectMode(provider: Provider): Promise<void> {
-  if (provider.apiFormat !== 'responses') {
+  if (!allModelsUseResponses(provider)) {
     throw new Error('直连供应商模式仅支持 Responses 格式供应商；Chat Completions 和 Anthropic 请使用本地路由模式。');
   }
   const apiKey = await getProviderService().currentApiKey(provider);
   if (!apiKey) throw new Error('当前供应商缺少本地 API Key，无法启用直连供应商模式。');
+}
+
+function allModelsUseResponses(provider: Pick<Provider, 'apiFormat' | 'models' | 'baseURL'>): boolean {
+  if (new URL(provider.baseURL).hostname === 'api.deepseek.com') return false;
+  return provider.models.every((model) => (model.apiFormat ?? provider.apiFormat) === 'responses');
 }
 
 function safeRoutePort(port: number): number {
@@ -1676,7 +1721,7 @@ async function syncCodexDirectProviderConfig(): Promise<void> {
   const currentProvider = await getProviderService().current();
   if (!currentProvider) return;
   // Direct mode bypasses the gateway, so Codex can only use providers that natively accept Responses requests.
-  if (currentProvider.apiFormat !== 'responses') {
+  if (!allModelsUseResponses(currentProvider)) {
     throw new Error('直连供应商模式第一版仅支持 Responses 格式供应商；Chat Completions 和 Anthropic 请继续使用本地路由模式。');
   }
 
@@ -1801,37 +1846,37 @@ async function toggleGateway(): Promise<void> {
   }
 }
 
-async function validateProviderInputModels(input: ProviderInput): Promise<void> {
-  const baseURL = normalizedValidationBaseURL(input.baseURL, input.apiFormat);
+function validateProviderInputModelsLocally(input: ProviderInput): void {
   const models = input.models
     .map((model) => ({
+      ...model,
       customName: model.customName.trim(),
       model: model.model.trim(),
     }))
     .filter((model) => model.customName && model.model);
 
   if (!models.length) throw new Error('至少添加一个模型。');
-
+  const aliases = new Set<string>();
   for (const model of models) {
-    const result = await validateProviderModel({
-      baseURL,
-      apiFormat: input.apiFormat,
-      model,
-      ...(input.id?.trim() ? { providerId: input.id.trim() } : {}),
-      ...(input.name?.trim() ? { name: input.name.trim() } : {}),
-      ...(input.apiKey?.trim() ? { apiKey: input.apiKey.trim() } : {}),
-    });
-    if (!result.ok) {
-      throw new Error(`模型 ${model.model} 检测失败：${result.message}`);
-    }
+    if (aliases.has(model.customName)) throw new Error(`模型自定义名称重复：${model.customName}`);
+    aliases.add(model.customName);
   }
 }
 
 async function validateProviderModel(input: ProviderModelValidationInput): Promise<ProviderModelValidationResult> {
   const startedAt = performance.now();
   const upstreamModel = input.model.model.trim();
-  const baseURL = normalizedValidationBaseURL(input.baseURL, input.apiFormat);
-  const endpoint = validationEndpoint(baseURL, input.apiFormat);
+  const provider: Provider = {
+    id: input.providerId ?? 'validation',
+    name: input.name ?? 'Validation',
+    baseURL: input.baseURL,
+    apiFormat: input.model.apiFormat ?? input.apiFormat,
+    models: [input.model],
+    selectedModel: upstreamModel,
+    updatedAt: 0,
+  };
+  const apiFormat = upstreamAPIFormatForProvider(provider);
+  const endpoint = `${upstreamBaseURLForProvider(provider)}${upstreamPathForGatewayPath('/responses', provider)}`;
 
   if (!upstreamModel) {
     return validationFailure(startedAt, endpoint, upstreamModel, '上游模型不能为空。');
@@ -1860,8 +1905,8 @@ async function validateProviderModel(input: ProviderModelValidationInput): Promi
   try {
     const response = await fetch(url, {
       method: 'POST',
-      headers: validationHeaders(input.apiFormat, apiKey),
-      body: JSON.stringify(validationBody(input.apiFormat, upstreamModel)),
+      headers: validationHeaders(apiFormat, apiKey),
+      body: JSON.stringify(validationBody(apiFormat, upstreamModel)),
       signal: controller.signal,
     });
     const text = await response.text();
@@ -1998,15 +2043,6 @@ function modelsListFailure(startedAt: number, endpoint: string, message: string)
     models: [],
     message,
   };
-}
-
-function validationEndpoint(baseURL: string, apiFormat: ApiFormat): string {
-  const pathByFormat: Record<ApiFormat, string> = {
-    responses: '/responses',
-    chat_completions: '/chat/completions',
-    anthropic_messages: '/messages',
-  };
-  return `${baseURL}${pathByFormat[apiFormat]}`;
 }
 
 function modelsListEndpoint(baseURL: string, apiFormat: ApiFormat): string {

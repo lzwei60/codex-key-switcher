@@ -452,8 +452,23 @@ function normalizeModels(models: ProviderModel[]): ProviderModel[] {
     .map((model) => ({
       customName: model.customName.trim(),
       model: model.model.trim(),
+      ...normalizeModelOptions(model),
     }))
     .filter((model) => model.customName && model.model);
+}
+
+function normalizeModelOptions(model: ProviderModel): Partial<ProviderModel> {
+  if (model.apiFormat !== undefined && !['responses', 'chat_completions', 'anthropic_messages'].includes(model.apiFormat)) {
+    throw new Error('模型 API 格式无效。');
+  }
+  for (const key of ['supportsReasoning', 'supportsImages'] as const) {
+    if (model[key] !== undefined && typeof model[key] !== 'boolean') throw new Error('模型能力配置必须是布尔值。');
+  }
+  return {
+    ...(model.apiFormat ? { apiFormat: model.apiFormat } : {}),
+    ...(model.supportsReasoning !== undefined ? { supportsReasoning: model.supportsReasoning } : {}),
+    ...(model.supportsImages !== undefined ? { supportsImages: model.supportsImages } : {}),
+  };
 }
 
 function normalizeStoredProvider(provider: LegacyProvider): Provider {

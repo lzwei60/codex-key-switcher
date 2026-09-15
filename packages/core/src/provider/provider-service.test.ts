@@ -3,6 +3,17 @@ import type { Provider } from '@codex-key-switcher/shared';
 import { ProviderService, type CredentialStore, type ProviderRepository } from './provider-service';
 
 describe('ProviderService', () => {
+  it('preserves model options through save, selection, export and import', async () => {
+    const repository = new MemoryProviderRepository([]);
+    const service = new ProviderService(repository, new MemoryCredentialStore());
+    const models = [{ customName: 'Qwen', model: 'qwen', apiFormat: 'chat_completions' as const, supportsReasoning: false, supportsImages: false }];
+    const saved = await service.upsert({ name: 'Mixed', baseURL: 'https://api.example.com/v1', apiFormat: 'responses', apiKey: 'test-key', models });
+    await service.setSelectedModel(saved.id, 'Qwen');
+    expect((await service.list())[0]?.models).toEqual(models);
+    const imported = new ProviderService(new MemoryProviderRepository([]), new MemoryCredentialStore());
+    await imported.importPayload(await service.exportPayload(true));
+    expect((await imported.list())[0]?.models).toEqual(models);
+  });
   it('switches providers after migrating a legacy selected key credential', async () => {
     const repository = new MemoryProviderRepository([
       providerFixture({

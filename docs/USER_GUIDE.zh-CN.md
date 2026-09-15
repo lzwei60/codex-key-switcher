@@ -4,14 +4,14 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 
 ## 适用平台
 
-- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.3-arm64.dmg`
-- macOS Intel：使用 `Codex-Key-Switcher-1.0.3-x64.dmg`
-- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.3-x64.exe`
-- Linux x64：使用 `Codex-Key-Switcher-1.0.3-x86_64.AppImage` 或 `Codex-Key-Switcher-1.0.3-amd64.deb`
+- macOS Apple Silicon：使用 `Codex-Key-Switcher-1.0.4-arm64.dmg`
+- macOS Intel：使用 `Codex-Key-Switcher-1.0.4-x64.dmg`
+- Windows x64：使用 `Codex-Key-Switcher-Setup-1.0.4-x64.exe`
+- Linux x64：使用 `Codex-Key-Switcher-1.0.4-x86_64.AppImage` 或 `Codex-Key-Switcher-1.0.4-amd64.deb`
 
 当前安装包未签名、未 notarize。首次安装时 macOS 或 Windows 可能出现安全提示，这是正常现象。
 
-当前稳定版本为 `v1.0.3`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
+当前稳定版本为 `v1.0.4`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
 
 ## 首次使用
 
@@ -55,6 +55,20 @@ DeepSeek Chat Completions 推荐配置：
 - 上游模型：例如 `deepseek-v4-pro`、`deepseek-v4-flash`
 
 ## 模型检测
+
+### 同一供应商下连续切换模型
+
+本地路由支持按每轮请求的 `model` 选择当前供应商下的模型，无需更换供应商。模型未配置单独协议时继承供应商的 API 格式；编辑模型时可覆盖为 Responses、Chat Completions 或 Anthropic Messages，并配置推理参数和图片输入能力。图片输入选择“继承供应商”时，Responses 模型默认支持图片，只有明确选择“不支持”才会关闭；Chat Completions 和 Anthropic 模型仍不支持通过 Responses 路由发送图片。旧配置无需迁移。
+
+- 在客户端选择已加载的另一个模型，下一轮请求会使用该模型。切换器里的默认模型不会覆盖客户端明确指定的模型。
+- 新增模型或修改 Catalog 后，需要重新加载客户端的模型目录；这不等于给正在生成的请求热切换模型。
+- 跨协议继续会话时，客户端必须提交完整可见历史。只提供 `previous_response_id` 或 `conversation` 时，非 Responses 适配器会返回 400，不会假装已经恢复历史。
+- 当前 Chat Completions 和 Anthropic 适配器只转换文本与函数工具历史，图片或文件历史会明确拒绝，避免静默丢失附件。图片支持开关不会自动为这些适配器增加多模态转换。
+- 混合协议供应商需要本地路由模式；直连模式要求所有模型都使用 Responses。
+- 上游断流、超时或返回失败事件时，不会补发成功事件，也不会把未完成的工具参数标记为完成。
+- 切换模型可能把前面的代码、消息和工具输出发送给另一模型服务商。聚合供应商相同不代表数据处理方或地域相同。
+
+以上能力通过本机模拟上游回归测试验证；真实服务商的工具格式、上下文上限和客户端历史提交行为仍需联调确认。
 
 新增或编辑模型时，点击“检测”可以验证该模型是否能连通。
 

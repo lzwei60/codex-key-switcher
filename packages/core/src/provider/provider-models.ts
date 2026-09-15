@@ -72,6 +72,22 @@ export function providerSelectedDisplayModel(provider: Provider): string {
   return model ? modelCustomName(model) : 'gpt-4.1';
 }
 
+export function providerModelSupportsImages(provider: Provider, model = providerSelectedModel(provider)): boolean {
+  if (!model) return false;
+  if ((model.apiFormat ?? provider.apiFormat) !== 'responses') return false;
+  return model.supportsImages !== false;
+}
+
+export function providerForModel(provider: Provider, requestedModel?: string | null): Provider {
+  const model = (requestedModel ? providerModelForCatalogModel(provider, requestedModel) : null)
+    ?? providerSelectedModel(provider);
+  return {
+    ...provider,
+    apiFormat: model?.apiFormat ?? provider.apiFormat,
+    selectedModel: model ? modelCustomName(model) : provider.selectedModel,
+  };
+}
+
 export function directSessionTargetForProvider(provider: Provider, appliedAt = Date.now()): DirectSessionTarget {
   const selectedModel = providerSelectedModel(provider);
   const modelName = selectedModel?.model.trim() || provider.selectedModel.trim();

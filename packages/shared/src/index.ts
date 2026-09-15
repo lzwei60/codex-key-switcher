@@ -3,6 +3,9 @@ export type ApiFormat = 'responses' | 'chat_completions' | 'anthropic_messages';
 export interface ProviderModel {
   customName: string;
   model: string;
+  apiFormat?: ApiFormat;
+  supportsReasoning?: boolean;
+  supportsImages?: boolean;
 }
 
 export interface Provider {

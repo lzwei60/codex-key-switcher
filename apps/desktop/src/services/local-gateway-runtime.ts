@@ -10,10 +10,14 @@ import {
 import type { GatewayStatus, Provider, RouteSettings } from '@codex-key-switcher/shared';
 import {
   adaptUpstreamResponseToResponses,
+  GatewayCompatibilityError,
+  NativeResponsesSSEAdapter,
+  providerForRequest,
   type ParsedUsage,
   requestBodyWantsStream,
   ResponsesSSEAdapter,
   StreamingUsageParser,
+  upstreamAPIFormatForProvider,
   upstreamBaseURLForProvider,
   upstreamPathForGatewayPath,
   upstreamRequestBodyFromGenericBody,
@@ -22,7 +26,14 @@ import {
 } from './gateway-protocol-adapter';
 
 const maxGatewayRequestBytes = 64 * 1024 * 1024;
-const upstreamRequestTimeoutMs = 600_000;
+const defaultGatewayTimeoutSettings = {
+  requestBodyMs: 30_000,
+  upstreamResponseHeadersMs: 120_000,
+  upstreamRequestMs: 600_000,
+  upstreamStreamIdleMs: 120_000,
+};
+
+type GatewayTimeoutSettings = typeof defaultGatewayTimeoutSettings;
 
 interface ForwardAttempt {
   provider: Provider;
@@ -35,6 +46,11 @@ interface ForwardAttempt {
   body?: Buffer;
   contentType?: string;
   errorPayload?: Record<string, unknown>;
+}
+
+interface StreamResult {
+  usage: ParsedUsage;
+  failed: boolean;
 }
 
 interface GatewayRequestContext {
@@ -60,6 +76,7 @@ export class LocalGatewayRuntime {
     private readonly providerService: ProviderService,
     private readonly codexConfig: CodexConfigService,
     private readonly usage: UsageService,
+    private readonly timeoutSettings: GatewayTimeoutSettings = defaultGatewayTimeoutSettings,
   ) {}
 
   async start(settings: RouteSettings): Promise<GatewayStatus> {
@@ -145,14 +162,14 @@ export class LocalGatewayRuntime {
         return;
       }
 
-      const body = await readRequestBody(request);
+      const body = await readRequestBody(request, this.timeoutSettings.requestBodyMs);
       await this.forwardRequest(request, response, url, body, context);
     } catch (error) {
       if (response.headersSent || response.destroyed) {
         if (!response.writableEnded) response.end();
         return;
       }
-      writeJson(response, error instanceof GatewayRequestError ? error.statusCode : 500, {
+      writeJson(response, error instanceof GatewayRequestError || error instanceof GatewayCompatibilityError ? error.statusCode : 500, {
         error: error instanceof Error ? error.message : 'Local gateway request failed',
       });
     }
@@ -274,6 +291,8 @@ export class LocalGatewayRuntime {
     provider: Provider,
     apiKey: string | null,
   ): Promise<ForwardAttempt> {
+    provider = providerForRequest(provider, body);
+    provider = { ...provider, apiFormat: upstreamAPIFormatForProvider(provider) };
     const originalPath = normalizedGatewayPath(url.pathname);
     const method = request.method ?? 'GET';
     const clientWantsStream = originalPath === '/responses' && requestBodyWantsStream(body);
@@ -327,7 +346,11 @@ export class LocalGatewayRuntime {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), upstreamRequestTimeoutMs);
+    let timeout = abortAfter(
+      controller,
+      this.timeoutSettings.upstreamResponseHeadersMs,
+      `Upstream did not return response headers within ${this.timeoutSettings.upstreamResponseHeadersMs}ms`,
+    );
     const abortOnClientClose = () => controller.abort();
     request.once('aborted', abortOnClientClose);
     response.once('close', abortOnClientClose);
@@ -343,17 +366,32 @@ export class LocalGatewayRuntime {
       }
 
       const upstreamResponse = await fetch(upstreamURL, upstreamRequest);
+      clearTimeout(timeout);
+      timeout = abortAfter(
+        controller,
+        this.timeoutSettings.upstreamRequestMs,
+        `Upstream request did not complete within ${this.timeoutSettings.upstreamRequestMs}ms`,
+      );
+
       if (upstreamResponse.status >= 200 && upstreamResponse.status < 300 && upstreamBody?.clientWantsStream) {
-        const usage = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt);
+        clearTimeout(timeout);
+        timeout = abortAfter(
+          controller,
+          this.timeoutSettings.upstreamStreamIdleMs,
+          `Upstream stream was idle for ${this.timeoutSettings.upstreamStreamIdleMs}ms`,
+        );
+        const stream = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt, () => {
+          timeout.refresh();
+        });
         const durationMs = Math.round(performance.now() - startedAt);
         return {
           provider,
-          status: upstreamResponse.status,
+          status: stream.failed ? controller.signal.aborted ? 504 : 502 : upstreamResponse.status,
           upstreamModel,
           durationMs,
           retryable: false,
           streamed: true,
-          usage,
+          usage: stream.usage,
         };
       }
 
@@ -378,7 +416,7 @@ export class LocalGatewayRuntime {
         contentType: adapted.contentType,
       };
     } catch (error) {
-      const aborted = error instanceof Error && error.name === 'AbortError';
+      const aborted = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
       const status = aborted ? 504 : 502;
       const durationMs = Math.round(performance.now() - startedAt);
       return {
@@ -390,7 +428,7 @@ export class LocalGatewayRuntime {
         streamed: false,
         usage: {},
         errorPayload: {
-          error: aborted ? 'Upstream request timed out before completion' : error instanceof Error ? error.message : 'Upstream request failed',
+          error: aborted ? abortReasonMessage(controller.signal) : error instanceof Error ? error.message : 'Upstream request failed',
           provider: provider.name,
           baseURL: provider.baseURL,
           model: upstreamModel,
@@ -418,7 +456,8 @@ export class LocalGatewayRuntime {
     provider: Provider,
     upstreamModel: string,
     startedAt: number,
-  ): Promise<ParsedUsage> {
+    onStreamChunk: () => void,
+  ): Promise<StreamResult> {
     const durationMs = Math.round(performance.now() - startedAt);
     response.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -430,41 +469,54 @@ export class LocalGatewayRuntime {
 
     if (!upstreamResponse.body) {
       response.end();
-      return {};
+      return { usage: {}, failed: true };
     }
 
     const reader = upstreamResponse.body.getReader();
     const decoder = new TextDecoder();
     const usageParser = new StreamingUsageParser();
 
-    if (provider.apiFormat === 'responses') {
-      return pipeNativeResponsesStream(reader, response, usageParser);
+    const upstreamAPIFormat = upstreamAPIFormatForProvider(provider);
+    if (upstreamAPIFormat === 'responses') {
+      return pipeNativeResponsesStream(reader, response, usageParser, upstreamModel, onStreamChunk);
     }
 
-    const adapter = new ResponsesSSEAdapter(provider.apiFormat, upstreamModel);
+    const adapter = new ResponsesSSEAdapter(upstreamAPIFormat, upstreamModel);
+    const result = (): StreamResult => ({ usage: usageParser.finish(), failed: adapter.failed });
     try {
       while (true) {
         const result = await reader.read();
         if (result.done) break;
-        if (response.destroyed || response.writableEnded) return usageParser.finish();
+        if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
+        onStreamChunk();
         const text = decoder.decode(result.value, { stream: true });
         usageParser.processTextChunk(text);
         for (const event of adapter.processTextChunk(text)) {
-          if (response.destroyed || response.writableEnded) return usageParser.finish();
+          if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
           if (!response.write(event)) await waitForDrain(response);
         }
       }
       const finalText = decoder.decode();
       usageParser.processTextChunk(finalText);
       for (const event of adapter.processTextChunk(finalText)) {
-        if (response.destroyed || response.writableEnded) return usageParser.finish();
+        if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
         if (!response.write(event)) await waitForDrain(response);
       }
       for (const event of adapter.finish()) {
-        if (response.destroyed || response.writableEnded) return usageParser.finish();
+        if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
         if (!response.write(event)) await waitForDrain(response);
       }
-      return usageParser.finish();
+      return result();
+    } catch (error) {
+      const events = adapter.fail(error instanceof Error ? error.message : 'Upstream stream interrupted');
+      if (!response.destroyed && !response.writableEnded) {
+        for (const event of events) {
+          if (response.destroyed || response.writableEnded) break;
+          if (!response.write(event)) await waitForDrain(response);
+        }
+        if (!response.writableEnded) response.end();
+      }
+      return result();
     } finally {
       if (!response.destroyed && !response.writableEnded) response.end();
     }
@@ -579,19 +631,46 @@ async function pipeNativeResponsesStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   response: http.ServerResponse,
   usageParser: StreamingUsageParser,
-): Promise<ParsedUsage> {
+  upstreamModel: string,
+  onStreamChunk: () => void,
+): Promise<StreamResult> {
   const decoder = new TextDecoder();
+  const adapter = new NativeResponsesSSEAdapter(upstreamModel);
+  const result = (): StreamResult => ({ usage: usageParser.finish(), failed: adapter.failed });
   try {
     while (true) {
       const result = await reader.read();
       if (result.done) break;
-      if (response.destroyed || response.writableEnded) return usageParser.finish();
-      const chunk = Buffer.from(result.value);
-      usageParser.processTextChunk(decoder.decode(result.value, { stream: true }));
-      if (!response.write(chunk)) await waitForDrain(response);
+      if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
+      onStreamChunk();
+      const text = decoder.decode(result.value, { stream: true });
+      usageParser.processTextChunk(text);
+      for (const event of adapter.processTextChunk(text)) {
+        if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
+        if (!response.write(event)) await waitForDrain(response);
+      }
     }
-    usageParser.processTextChunk(decoder.decode());
-    return usageParser.finish();
+    const finalText = decoder.decode();
+    usageParser.processTextChunk(finalText);
+    for (const event of adapter.processTextChunk(finalText)) {
+      if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
+      if (!response.write(event)) await waitForDrain(response);
+    }
+    for (const event of adapter.finish()) {
+      if (response.destroyed || response.writableEnded) return { usage: usageParser.finish(), failed: true };
+      if (!response.write(event)) await waitForDrain(response);
+    }
+    return result();
+  } catch (error) {
+    const events = adapter.fail(error instanceof Error ? error.message : 'Upstream stream interrupted');
+    if (!response.destroyed && !response.writableEnded) {
+      for (const event of events) {
+        if (response.destroyed || response.writableEnded) break;
+        if (!response.write(event)) await waitForDrain(response);
+      }
+      if (!response.writableEnded) response.end();
+    }
+    return result();
   } finally {
     if (!response.destroyed && !response.writableEnded) response.end();
   }
@@ -613,25 +692,54 @@ function waitForDrain(response: http.ServerResponse): Promise<void> {
 }
 
 function clientDisconnected(request: http.IncomingMessage, response: http.ServerResponse): boolean {
-  return request.aborted || request.destroyed || response.destroyed || response.writableEnded;
+  // IncomingMessage.destroyed can be true after the request body is read normally.
+  // Treating it as a disconnect makes the gateway skip upstream forwarding and
+  // leave the client response open.
+  return request.aborted || response.destroyed || response.writableEnded;
 }
 
-async function readRequestBody(request: http.IncomingMessage): Promise<Buffer> {
+async function readRequestBody(request: http.IncomingMessage, timeoutMs: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   const declaredLength = Number(request.headers['content-length']);
   if (Number.isFinite(declaredLength) && declaredLength > maxGatewayRequestBytes) {
     throw new GatewayRequestError('HTTP request is too large', 413);
   }
   let size = 0;
-  for await (const chunk of request) {
-    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += data.length;
-    if (size > maxGatewayRequestBytes) {
-      throw new GatewayRequestError('HTTP request is too large', 413);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    request.destroy(new GatewayRequestError('HTTP request body timed out', 408));
+  }, timeoutMs);
+
+  try {
+    for await (const chunk of request) {
+      const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += data.length;
+      if (size > maxGatewayRequestBytes) {
+        throw new GatewayRequestError('HTTP request is too large', 413);
+      }
+      chunks.push(data);
     }
-    chunks.push(data);
+  } catch (error) {
+    if (timedOut) throw new GatewayRequestError('HTTP request body timed out', 408);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
   return Buffer.concat(chunks);
+}
+
+function abortAfter(controller: AbortController, timeoutMs: number, message: string): NodeJS.Timeout {
+  return setTimeout(() => {
+    if (!controller.signal.aborted) controller.abort(new Error(message));
+  }, timeoutMs);
+}
+
+function abortReasonMessage(signal: AbortSignal): string {
+  const reason = signal.reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === 'string' && reason.trim()) return reason;
+  return 'Upstream request timed out before completion';
 }
 
 function authorizationToken(authorization: string | string[] | undefined): string {
