@@ -508,7 +508,7 @@ function RouteSettings() {
         showIcon
         title={mode === 'direct_provider'
           ? text('直连供应商模式不会启动本地监听，也不会记录本地请求日志和 Token 统计；仅支持 Responses 格式供应商。', 'Direct provider mode does not start a local listener and cannot record request logs or token stats. The first version only supports Responses providers.')
-          : text('故障转移只会在上游 5xx、超时或网络错误时尝试下一个供应商；4xx 配置错误会直接返回。', 'Failover only tries the next provider for upstream 5xx, timeout, or network errors. 4xx configuration errors return directly.')}
+          : text('故障转移会按供应商优先级处理 5xx、超时、网络错误、缺少 Key 和无效 Base URL；4xx 会直接返回。', 'Failover follows provider priority for 5xx, timeout, network, missing-key, and invalid-URL failures. 4xx responses return directly.')}
         type="info"
       />
       <Form
@@ -522,6 +522,11 @@ function RouteSettings() {
           listenPort: 3456,
           allowLANListen: false,
           failoverEnabled: false,
+          failoverMaxAttempts: 3,
+          failoverTotalTimeoutMs: 180_000,
+          failoverFailureThreshold: 3,
+          failoverCooldownMs: 60_000,
+          failoverHalfOpenMaxRequests: 1,
         }}
         layout="vertical"
         onFinish={(values) => void saveSettings(values as RouteSettingsValue)}
@@ -562,6 +567,23 @@ function RouteSettings() {
             <Form.Item label={text('故障转移', 'Failover')} name="failoverEnabled" valuePropName="checked">
               <Switch loading={loading} />
             </Form.Item>
+            <Space className="route-row" size={16} wrap>
+              <Form.Item label={text('最大尝试次数', 'Max attempts')} name="failoverMaxAttempts">
+                <InputNumber disabled={loading} min={1} max={20} />
+              </Form.Item>
+              <Form.Item label={text('总超时（毫秒）', 'Total timeout (ms)')} name="failoverTotalTimeoutMs">
+                <InputNumber disabled={loading} min={1000} max={1800000} step={1000} />
+              </Form.Item>
+              <Form.Item label={text('熔断失败阈值', 'Circuit failure threshold')} name="failoverFailureThreshold">
+                <InputNumber disabled={loading} min={1} max={100} />
+              </Form.Item>
+              <Form.Item label={text('熔断冷却（毫秒）', 'Circuit cooldown (ms)')} name="failoverCooldownMs">
+                <InputNumber disabled={loading} min={1000} max={3600000} step={1000} />
+              </Form.Item>
+              <Form.Item label={text('半开探测并发', 'Half-open probes')} name="failoverHalfOpenMaxRequests">
+                <InputNumber disabled={loading} min={1} max={20} />
+              </Form.Item>
+            </Space>
           </>
         ) : null}
         <Space>

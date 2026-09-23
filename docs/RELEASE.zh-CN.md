@@ -15,10 +15,12 @@ Codex Key Switcher 通过 GitHub Releases 分发未签名桌面安装包。应�
 
 应用内更新功能会根据文件名选择安装包。除非同一个版本同步修改 `apps/desktop/src/main/main.ts` 中的匹配逻辑，否则不要手动重命名 Release 资源。
 
+应用包名称同样必须保持固定以兼容升级：macOS 使用 `Codex Key Switcher.app`，Windows 安装包内使用 `codex-key-switcher.exe`，Linux 包内使用 `codex-key-switcher`。macOS 安装时请将新应用拖到 `/Applications` 中已有的 `Codex Key Switcher.app` 上覆盖，不要保留手动改名的旧应用和新应用两个副本。
+
 ## 版本规则
 
 1. 更新 `apps/desktop/package.json` 中的 `version`。
-2. 使用匹配的 Git tag，例如 `v1.0.4`。
+2. 使用匹配的 Git tag，例如 `v1.0.5`。
 3. GitHub Release 的 latest 版本必须使用同一个 tag。
 
 更新检查会用 `app.getVersion()` 和 GitHub 最新 Release 的 tag 或 release name 对比版本号，并自动去掉开头的 `v`。
@@ -44,7 +46,7 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.4`。
+4. 创建 GitHub Release，tag 必须匹配桌面端版本号，例如 `v1.0.5`。
 5. 上传 `release/` 目录下的四个平台安装包资源组。
 6. 将该 GitHub Release 标记为 latest。
 7. 安装上一个桌面版本，并验证“设置 -> 更新”：
@@ -64,6 +66,39 @@ pnpm --filter @codex-key-switcher/desktop dist:linux
 - Release notes 应明确告知用户安装包未签名，并要求用户只从本仓库 GitHub Releases 页面下载。
 
 在面向正式产品级公开分发前，应补充代码签名和 macOS notarization。
+
+## v1.0.5 Release Notes
+
+### 版本定位
+
+`v1.0.5` 是本地网关路由稳定性版本，新增可配置的供应商故障转移、熔断保护、备用模型映射、按尝试记录用量，以及更可靠的运行时配置更新处理。
+
+### 新增内容
+
+- 支持配置故障转移最大尝试次数、总超时、连续失败阈值、熔断冷却时间和半开状态并发数。
+- 支持配置供应商优先级，以及故障转移时的备用模型映射。
+- 每次故障转移尝试都会记录请求 ID、尝试次数、是否最终尝试、错误分类、供应商、模型、状态码和耗时。
+
+### 修复与优化
+
+- 修改网关监听地址或端口后会重启本地网关，不再继续使用旧监听器。
+- 关闭故障转移时清理旧熔断状态，避免重新开启后继承过期状态。
+- 备用供应商读取凭据失败时继续尝试后续供应商，同时记录凭据错误。
+- 无论请求正常结束还是抛出异常，都会释放半开熔断许可。
+- 升级过程中保留已有供应商、凭据、用量统计和连接设置。
+
+### 升级说明
+
+- 旧供应商和连接设置会保留；缺失的新故障转移配置会使用保守默认值。
+- Chat Completions 和 Anthropic 模型仍需要本地路由模式；直连模式要求 Responses。
+- 当前安装包仍未签名、未 notarize。请只从本仓库 GitHub Releases 页面下载。
+
+### 安装包
+
+- macOS Apple Silicon：`Codex-Key-Switcher-1.0.5-arm64.dmg`
+- macOS Intel：`Codex-Key-Switcher-1.0.5-x64.dmg`
+- Windows x64：`Codex-Key-Switcher-Setup-1.0.5-x64.exe`
+- Linux x64：`Codex-Key-Switcher-1.0.5-x86_64.AppImage` 和 `Codex-Key-Switcher-1.0.5-amd64.deb`
 
 ## v1.0.4 Release Notes
 

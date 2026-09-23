@@ -1,7 +1,7 @@
 'use client';
 
 import { CheckCircleOutlined, CloseCircleOutlined, MinusCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { App, Button, Drawer, Form, Input, Select, Space, Tag } from 'antd';
+import { App, Button, Drawer, Form, Input, InputNumber, Select, Space, Switch, Tag } from 'antd';
 import type { ApiFormat, Provider, ProviderInput, ProviderModel, ProviderModelValidationResult } from '@codex-key-switcher/shared';
 import { useEffect, useState, type Key } from 'react';
 import { getDesktopApi } from '../../lib/desktop-api';
@@ -14,6 +14,9 @@ interface ProviderFormValues {
   baseURL: string;
   apiFormat: ApiFormat;
   tag?: string;
+  failoverEnabled: boolean;
+  failoverPriority: number;
+  failoverModelMappings: string;
   models: ModelFormValue[];
 }
 
@@ -52,6 +55,9 @@ export function ProviderFormDrawer({
     baseURL: provider?.baseURL ?? '',
     apiFormat: provider?.apiFormat ?? 'responses',
     tag: provider?.tag ?? '',
+    failoverEnabled: provider?.failover?.enabled !== false,
+    failoverPriority: provider?.failover?.priority ?? 100,
+    failoverModelMappings: formatModelMappings(provider?.failover?.modelMappings),
     models: formModelsForProvider(provider),
   };
 
@@ -66,6 +72,9 @@ export function ProviderFormDrawer({
       baseURL: provider?.baseURL ?? '',
       apiFormat: provider?.apiFormat ?? 'responses',
       tag: provider?.tag ?? '',
+      failoverEnabled: provider?.failover?.enabled !== false,
+      failoverPriority: provider?.failover?.priority ?? 100,
+      failoverModelMappings: formatModelMappings(provider?.failover?.modelMappings),
       models: formModelsForProvider(provider),
     });
   }, [form, open, provider]);
@@ -237,6 +246,11 @@ export function ProviderFormDrawer({
           if (provider?.id) input.id = provider.id;
           if (values.apiKey?.trim()) input.apiKey = values.apiKey.trim();
           if (values.tag?.trim()) input.tag = values.tag.trim();
+          input.failover = {
+            enabled: values.failoverEnabled !== false,
+            priority: Number.isFinite(values.failoverPriority) ? Math.max(0, Math.round(values.failoverPriority)) : 100,
+            modelMappings: parseModelMappings(values.failoverModelMappings),
+          };
           const selectedModel = provider?.selectedModel && models.some((model) => (
             provider.selectedModel === model.customName || provider.selectedModel === model.model
           ))
@@ -274,6 +288,21 @@ export function ProviderFormDrawer({
         </Form.Item>
         <Form.Item label={text('标签', 'Tag')} name="tag">
           <Input placeholder={text('默认、备用、内网等', 'Default, backup, internal, etc.')} />
+        </Form.Item>
+        <Space className="route-row" size={16} wrap>
+          <Form.Item label={text('加入故障转移', 'Include in failover')} name="failoverEnabled" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item label={text('故障转移优先级', 'Failover priority')} name="failoverPriority" extra={text('数值越小越优先；当前供应商始终先尝试。', 'Lower values run first; the current provider is always attempted first.')}>
+            <InputNumber min={0} max={10000} />
+          </Form.Item>
+        </Space>
+        <Form.Item
+          label={text('备用模型映射', 'Failover model mappings')}
+          name="failoverModelMappings"
+          extra={text('每行一个：请求模型=该供应商模型别名或上游模型。', 'One per line: requested-model=provider alias or upstream model.')}
+        >
+          <Input.TextArea rows={3} placeholder={'gpt-5=claude-sonnet-4\nks-primary-gpt=Claude'} />
         </Form.Item>
         <Form.Item
           label={text('API 格式', 'API format')}
@@ -417,3 +446,19 @@ const capabilityOptions: Array<{ label: string; value: boolean | 'inherit' }> = 
   { label: 'Supported', value: true },
   { label: 'Not supported', value: false },
 ];
+
+function parseModelMappings(value: string | undefined): Record<string, string> {
+  const mappings: Record<string, string> = {};
+  for (const line of (value ?? '').split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const source = line.slice(0, separator).trim();
+    const target = line.slice(separator + 1).trim();
+    if (source && target) mappings[source] = target;
+  }
+  return mappings;
+}
+
+function formatModelMappings(value: Record<string, string> | undefined): string {
+  return Object.entries(value ?? {}).map(([source, target]) => `${source}=${target}`).join('\n');
+}

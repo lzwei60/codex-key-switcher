@@ -13,6 +13,8 @@ Codex Key Switcher 是一个用于管理 Codex API Key、供应商、模型别�
 
 当前稳定版本为 `v1.0.4`。应用内“关于”和“设置 -> 更新”显示的当前版本来自桌面端 `app.getVersion()`。
 
+macOS 安装时请将 DMG 中的 `Codex Key Switcher.app` 拖到 `/Applications`，并确认覆盖已有的同名应用。不要把新应用改名为其他名称，也不要保留 `codex-key-switcher.app` 和 `Codex Key Switcher.app` 两个副本，否则 Finder 可能继续打开旧版本。
+
 ## 首次使用
 
 1. 安装并启动 Codex Key Switcher。
@@ -152,6 +154,11 @@ http://127.0.0.1:3456/v1
 - 监听端口
 - 允许局域网监听
 - 故障转移
+  - 最大尝试次数与整次请求总超时
+  - 连续失败熔断、冷却时间和半开探测并发
+  - 供应商级启用状态、优先级与备用模型映射
+  - `5xx`、网络错误、超时、缺少 Key、无效 Base URL 会尝试下一供应商；`4xx` 不重试
+  - 流式响应一旦开始向 Codex 输出便不会切换供应商
 - 检测端口
 
 更新：

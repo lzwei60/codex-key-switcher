@@ -72,3 +72,5 @@ The renderer does not receive Node.js access and does not read provider secrets 
 - Retryable: upstream `5xx`, network failure, timeout, missing provider API key, or invalid provider Base URL.
 - Not retryable: upstream `4xx`, successful responses, and streams after bytes have started flowing to the client.
 - Default: disabled in route settings so production behavior remains explicit and predictable.
+- Enterprise controls: ordered provider priority, provider inclusion, model mappings, maximum attempts, total deadline, consecutive-failure circuit breaking, cooldown, and half-open probes.
+- Observability: each provider attempt is recorded with a shared request ID, attempt number, failover flag, final-attempt flag, and error category.

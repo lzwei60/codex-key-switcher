@@ -8,6 +8,12 @@ export interface ProviderModel {
   supportsImages?: boolean;
 }
 
+export interface ProviderFailoverSettings {
+  enabled: boolean;
+  priority: number;
+  modelMappings: Record<string, string>;
+}
+
 export interface Provider {
   id: string;
   name: string;
@@ -17,6 +23,7 @@ export interface Provider {
   selectedModel: string;
   tag?: string;
   keyPreview?: string;
+  failover?: ProviderFailoverSettings;
   updatedAt: number;
 }
 
@@ -29,6 +36,7 @@ export interface ProviderInput {
   models: ProviderModel[];
   selectedModel?: string;
   tag?: string;
+  failover?: ProviderFailoverSettings;
 }
 
 export interface ProviderModelValidationInput {
@@ -89,6 +97,11 @@ export interface RouteSettings {
   listenPort: number;
   allowLANListen: boolean;
   failoverEnabled: boolean;
+  failoverMaxAttempts: number;
+  failoverTotalTimeoutMs: number;
+  failoverFailureThreshold: number;
+  failoverCooldownMs: number;
+  failoverHalfOpenMaxRequests: number;
 }
 
 export interface AppStartupSettings {
@@ -168,6 +181,11 @@ export interface UsageRecord {
   inputTokens?: number;
   outputTokens?: number;
   cachedTokens?: number;
+  requestId?: string;
+  attempt?: number;
+  failover?: boolean;
+  finalAttempt?: boolean;
+  errorCategory?: string;
   createdAt: number;
 }
 

@@ -70,6 +70,20 @@ describe('ProviderService', () => {
     ]);
   });
 
+  it('orders failover providers by explicit priority and excludes disabled entries', async () => {
+    const repository = new MemoryProviderRepository([
+      providerFixture({ id: 'provider-low', updatedAt: 30, failover: { enabled: true, priority: 20, modelMappings: {} } }),
+      providerFixture({ id: 'provider-high', updatedAt: 20, failover: { enabled: true, priority: 10, modelMappings: {} } }),
+      providerFixture({ id: 'provider-disabled', updatedAt: 10, failover: { enabled: false, priority: 0, modelMappings: {} } }),
+    ]);
+    const service = new ProviderService(repository, new MemoryCredentialStore());
+
+    await expect(service.routingProviders()).resolves.toMatchObject([
+      { id: 'provider-high' },
+      { id: 'provider-low' },
+    ]);
+  });
+
   it('does not read local credentials while listing provider metadata', async () => {
     const repository = new MemoryProviderRepository([
       providerFixture({

@@ -13,6 +13,8 @@ The current installers are unsigned and not notarized. macOS or Windows may show
 
 The current stable version is `v1.0.4`. The version shown in About and Settings -> Updates comes from the desktop `app.getVersion()` value.
 
+On macOS, drag `Codex Key Switcher.app` from the DMG to `/Applications` and replace the existing app with the same name. Do not rename the new app or keep both `codex-key-switcher.app` and `Codex Key Switcher.app`, otherwise Finder may continue launching the older copy.
+
 ## First Run
 
 1. Install and start Codex Key Switcher.
@@ -138,6 +140,11 @@ Gateway:
 - Listen port
 - Allow LAN listen
 - Failover
+  - Maximum attempts and a total request timeout
+  - Consecutive-failure circuit breaking, cooldown, and half-open probe concurrency
+  - Per-provider inclusion, priority, and backup model mappings
+  - `5xx`, network, timeout, missing-key, and invalid-URL failures try the next provider; `4xx` does not retry
+  - A streaming response never switches provider after output to Codex has started
 - Check port
 
 Updates:

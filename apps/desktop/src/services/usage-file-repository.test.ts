@@ -149,6 +149,21 @@ describe('UsageFileRepository', () => {
     expect(stats.logs.records.map((record) => record.id)).toEqual(['first']);
   });
 
+  it('persists failover attempt observability fields', async () => {
+    const root = await temporaryRoot();
+    const repository = new UsageFileRepository(root);
+    await repository.record({
+      id: 'attempt-2', provider: 'backup', model: 'backup-model', status: 200, durationMs: 25, source: 'responses',
+      requestId: 'request-1', attempt: 2, failover: true, finalAttempt: true, errorCategory: 'network', createdAt: Date.now(),
+    });
+    await repository.flush();
+
+    const reopened = new UsageFileRepository(root);
+    await expect(reopened.snapshot()).resolves.toMatchObject([{
+      requestId: 'request-1', attempt: 2, failover: true, finalAttempt: true, errorCategory: 'network',
+    }]);
+  });
+
   it('clears request logs and resets aggregated stats', async () => {
     const root = await temporaryRoot();
     const repository = new UsageFileRepository(root);

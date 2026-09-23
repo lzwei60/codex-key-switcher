@@ -282,12 +282,12 @@ export function ProviderListPage({
                     <div className="provider-title-block">
                       <Text className="provider-card-title" strong>{provider.name}</Text>
                       <Text type="secondary">
-                        {formatApiFormat(provider.apiFormat)} · {text(`${provider.models.length} 个模型`, `${provider.models.length} models`)}
+                        {formatApiFormat(provider.apiFormat)} · {text(`${provider.models.length} 个模型`, `${provider.models.length} models`)} · {text(`优先级 ${provider.failover?.priority ?? 100}`, `Priority ${provider.failover?.priority ?? 100}`)}
                       </Text>
                     </div>
                   </Space>
                   <Tag className="provider-card-tag" color={isCurrent ? 'success' : 'blue'}>
-                    {isCurrent ? text('当前', 'Current') : provider.tag || text('备用', 'Backup')}
+                    {isCurrent ? text('当前', 'Current') : provider.failover?.enabled === false ? text('不参与转移', 'Failover off') : provider.tag || text('备用', 'Backup')}
                   </Tag>
                 </div>
 

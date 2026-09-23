@@ -35,6 +35,8 @@ const defaultGatewayTimeoutSettings = {
 
 type GatewayTimeoutSettings = typeof defaultGatewayTimeoutSettings;
 
+type AttemptErrorCategory = 'missing_api_key' | 'credential_error' | 'invalid_base_url' | 'upstream_5xx' | 'timeout' | 'network' | 'stream';
+
 interface ForwardAttempt {
   provider: Provider;
   status: number;
@@ -46,11 +48,18 @@ interface ForwardAttempt {
   body?: Buffer;
   contentType?: string;
   errorPayload?: Record<string, unknown>;
+  errorCategory?: AttemptErrorCategory;
 }
 
 interface StreamResult {
   usage: ParsedUsage;
   failed: boolean;
+}
+
+interface ProviderCircuitState {
+  consecutiveFailures: number;
+  openedAt: number | null;
+  halfOpenInFlight: number;
 }
 
 interface GatewayRequestContext {
@@ -71,6 +80,7 @@ export class LocalGatewayRuntime {
   private readonly sockets = new Set<Socket>();
   private endpoint = 'http://127.0.0.1:3456/v1';
   private routeSettings = defaultRuntimeRouteSettings();
+  private readonly circuitStates = new Map<string, ProviderCircuitState>();
 
   constructor(
     private readonly providerService: ProviderService,
@@ -80,7 +90,14 @@ export class LocalGatewayRuntime {
   ) {}
 
   async start(settings: RouteSettings): Promise<GatewayStatus> {
-    this.routeSettings = normalizeRuntimeRouteSettings(settings);
+    const nextSettings = normalizeRuntimeRouteSettings(settings);
+    const bindingChanged = Boolean(this.server)
+      && (this.routeSettings.listenAddress !== nextSettings.listenAddress || this.routeSettings.listenPort !== nextSettings.listenPort);
+    if (this.routeSettings.failoverEnabled && !nextSettings.failoverEnabled) {
+      this.circuitStates.clear();
+    }
+    if (bindingChanged) await this.stop();
+    this.routeSettings = nextSettings;
     if (this.server) return this.status();
 
     const listenPort = this.routeSettings.listenPort;
@@ -232,37 +249,71 @@ export class LocalGatewayRuntime {
     body: Buffer,
     context: GatewayRequestContext,
   ): Promise<void> {
-    const provider = context.provider;
-    if (!provider) {
+    const primaryProvider = context.provider;
+    if (!primaryProvider) {
       writeJson(response, 503, { error: 'No active provider' });
       return;
     }
 
-    const candidates = await this.candidateProviders(provider);
+    const requestId = crypto.randomUUID();
+    const requestedModel = requestedModelFromRequestBody(body);
+    const candidates = await this.candidateProviders(primaryProvider);
+    const maxAttempts = this.routeSettings.failoverEnabled ? this.routeSettings.failoverMaxAttempts : 1;
+    const deadlineAt = performance.now() + this.routeSettings.failoverTotalTimeoutMs;
     let lastAttempt: ForwardAttempt | null = null;
+    let attemptNumber = 0;
 
-    for (const candidate of candidates) {
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      if (attemptNumber >= maxAttempts) break;
+      const candidate = candidates[candidateIndex];
+      if (!candidate) continue;
       if (clientDisconnected(request, response)) return;
-      const candidateApiKey = candidate.id === provider.id
-        ? context.providerApiKey
-        : await this.providerService.currentApiKey(candidate);
-      const attempt = await this.forwardWithProvider(request, response, url, body, candidate, candidateApiKey);
-      lastAttempt = attempt;
-      if (attempt.streamed) {
-        void this.recordUsage(attempt.provider, attempt.upstreamModel, attempt.status, attempt.durationMs, attempt.usage);
-        return;
+      const remainingMs = Math.round(deadlineAt - performance.now());
+      if (remainingMs <= 0) {
+        lastAttempt = totalDeadlineAttempt(candidate, requestedModel, this.routeSettings.failoverTotalTimeoutMs);
+        void this.recordUsageAttempt(requestId, attemptNumber + 1, candidate.id !== primaryProvider.id, true, lastAttempt);
+        break;
       }
+      const circuitPermit = this.acquireCircuitPermit(candidate.id);
+      if (!circuitPermit.allowed) continue;
+
+      attemptNumber++;
+      const failover = candidate.id !== primaryProvider.id;
+      let attempt: ForwardAttempt;
+      try {
+        attempt = await this.forwardCandidate(
+          request,
+          response,
+          url,
+          body,
+          candidate,
+          primaryProvider.id === candidate.id ? context.providerApiKey : undefined,
+          remainingMs,
+          failover,
+        );
+      } finally {
+        this.releaseHalfOpenPermit(candidate.id, circuitPermit.halfOpen);
+      }
+      lastAttempt = attempt;
+      const willRetry = attempt.retryable
+        && !attempt.streamed
+        && attemptNumber < maxAttempts
+        && candidates.slice(candidateIndex + 1).some((next) => this.circuitAvailable(next.id))
+        && performance.now() < deadlineAt;
+      this.updateCircuitState(candidate.id, attempt);
+      void this.recordUsageAttempt(requestId, attemptNumber, failover, !willRetry, attempt);
+
+      if (attempt.streamed) return;
       if (clientDisconnected(request, response) || response.headersSent) return;
-      if (!attempt.retryable) break;
+      if (!willRetry) break;
     }
 
     if (!lastAttempt) {
-      writeJson(response, 503, { error: 'No active provider' });
+      writeJson(response, 503, { error: 'No available provider; all configured circuits are open' });
       return;
     }
 
     if (lastAttempt.errorPayload) {
-      void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usage);
       writeJson(response, lastAttempt.status, lastAttempt.errorPayload);
       return;
     }
@@ -276,11 +327,48 @@ export class LocalGatewayRuntime {
         lastAttempt.provider,
         lastAttempt.upstreamModel,
         lastAttempt.durationMs,
-        lastAttempt.provider.id !== provider.id,
+        lastAttempt.provider.id !== primaryProvider.id,
       ),
     });
     response.end(data);
-    void this.recordUsage(lastAttempt.provider, lastAttempt.upstreamModel, lastAttempt.status, lastAttempt.durationMs, lastAttempt.usage);
+  }
+
+  private async forwardCandidate(
+    request: http.IncomingMessage,
+    response: http.ServerResponse,
+    url: URL,
+    body: Buffer,
+    candidate: Provider,
+    primaryApiKey: string | null | undefined,
+    remainingRequestMs: number,
+    failover: boolean,
+  ): Promise<ForwardAttempt> {
+    let apiKey: string | null;
+    try {
+      apiKey = primaryApiKey !== undefined
+        ? primaryApiKey
+        : await this.providerService.currentApiKey(candidate);
+    } catch {
+      const provider = providerForAttempt(candidate, body, failover);
+      return {
+        provider,
+        status: 503,
+        upstreamModel: providerSelectedCatalogModel(provider),
+        durationMs: 0,
+        retryable: true,
+        streamed: false,
+        usage: {},
+        errorCategory: 'credential_error',
+        errorPayload: {
+          error: 'Provider API Key is unavailable',
+          provider: provider.name,
+          baseURL: provider.baseURL,
+          model: providerSelectedCatalogModel(provider),
+        },
+      };
+    }
+
+    return this.forwardWithProvider(request, response, url, body, candidate, apiKey, remainingRequestMs, failover);
   }
 
   private async forwardWithProvider(
@@ -290,9 +378,10 @@ export class LocalGatewayRuntime {
     body: Buffer,
     provider: Provider,
     apiKey: string | null,
+    remainingRequestMs: number,
+    failover: boolean,
   ): Promise<ForwardAttempt> {
-    provider = providerForRequest(provider, body);
-    provider = { ...provider, apiFormat: upstreamAPIFormatForProvider(provider) };
+    provider = providerForAttempt(provider, body, failover);
     const originalPath = normalizedGatewayPath(url.pathname);
     const method = request.method ?? 'GET';
     const clientWantsStream = originalPath === '/responses' && requestBodyWantsStream(body);
@@ -307,19 +396,9 @@ export class LocalGatewayRuntime {
 
     if (!apiKey) {
       return {
-        provider,
-        status: 503,
-        upstreamModel,
-        durationMs: Math.round(performance.now() - startedAt),
-        retryable: true,
-        streamed: false,
-        usage: {},
-        errorPayload: {
-          error: 'Provider API Key is unavailable',
-          provider: provider.name,
-          baseURL: provider.baseURL,
-          model: upstreamModel,
-        },
+        provider, status: 503, upstreamModel, durationMs: 0, retryable: true, streamed: false, usage: {},
+        errorCategory: 'missing_api_key',
+        errorPayload: { error: 'Provider API Key is unavailable', provider: provider.name, baseURL: provider.baseURL, model: upstreamModel },
       };
     }
 
@@ -329,109 +408,82 @@ export class LocalGatewayRuntime {
       upstreamURL = new URL(`${upstreamBaseURLForProvider(provider)}${upstreamPath}${url.search}`);
     } catch {
       return {
-        provider,
-        status: 500,
-        upstreamModel,
-        durationMs: Math.round(performance.now() - startedAt),
-        retryable: true,
-        streamed: false,
-        usage: {},
-        errorPayload: {
-          error: 'Invalid provider baseURL',
-          provider: provider.name,
-          baseURL: provider.baseURL,
-          model: upstreamModel,
-        },
+        provider, status: 500, upstreamModel, durationMs: 0, retryable: true, streamed: false, usage: {},
+        errorCategory: 'invalid_base_url',
+        errorPayload: { error: 'Invalid provider baseURL', provider: provider.name, baseURL: provider.baseURL, model: upstreamModel },
       };
     }
 
     const controller = new AbortController();
     let timeout = abortAfter(
       controller,
-      this.timeoutSettings.upstreamResponseHeadersMs,
-      `Upstream did not return response headers within ${this.timeoutSettings.upstreamResponseHeadersMs}ms`,
+      Math.min(this.timeoutSettings.upstreamResponseHeadersMs, remainingRequestMs),
+      `Upstream did not return response headers before the request deadline`,
     );
     const abortOnClientClose = () => controller.abort();
     request.once('aborted', abortOnClientClose);
     response.once('close', abortOnClientClose);
 
     try {
-      const upstreamRequest: RequestInit = {
-        method,
-        headers: upstreamHeaders(request, provider, apiKey),
-        signal: controller.signal,
-      };
-      if (bodyData) {
-        upstreamRequest.body = bodyData.toString('utf8');
-      }
-
+      const upstreamRequest: RequestInit = { method, headers: upstreamHeaders(request, provider, apiKey), signal: controller.signal };
+      if (bodyData) upstreamRequest.body = bodyData.toString('utf8');
       const upstreamResponse = await fetch(upstreamURL, upstreamRequest);
       clearTimeout(timeout);
+      const requestRemainingMs = Math.max(1, Math.round(remainingRequestMs - (performance.now() - startedAt)));
       timeout = abortAfter(
         controller,
-        this.timeoutSettings.upstreamRequestMs,
-        `Upstream request did not complete within ${this.timeoutSettings.upstreamRequestMs}ms`,
+        Math.min(this.timeoutSettings.upstreamRequestMs, requestRemainingMs),
+        'Upstream request did not complete before the request deadline',
       );
 
       if (upstreamResponse.status >= 200 && upstreamResponse.status < 300 && upstreamBody?.clientWantsStream) {
         clearTimeout(timeout);
+        const totalStreamTimeout = abortAfter(
+          controller,
+          requestRemainingMs,
+          'Upstream stream exceeded the total request deadline',
+        );
         timeout = abortAfter(
           controller,
-          this.timeoutSettings.upstreamStreamIdleMs,
-          `Upstream stream was idle for ${this.timeoutSettings.upstreamStreamIdleMs}ms`,
+          Math.min(this.timeoutSettings.upstreamStreamIdleMs, requestRemainingMs),
+          'Upstream stream was idle before the request deadline',
         );
-        const stream = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt, () => {
-          timeout.refresh();
-        });
-        const durationMs = Math.round(performance.now() - startedAt);
-        return {
-          provider,
-          status: stream.failed ? controller.signal.aborted ? 504 : 502 : upstreamResponse.status,
-          upstreamModel,
-          durationMs,
-          retryable: false,
-          streamed: true,
-          usage: stream.usage,
-        };
+        try {
+          const stream = await this.writeStreamingResponse(response, upstreamResponse, provider, upstreamModel, startedAt, () => timeout.refresh(), failover);
+          return {
+            provider,
+            status: stream.failed ? controller.signal.aborted ? 504 : 502 : upstreamResponse.status,
+            upstreamModel,
+            durationMs: Math.round(performance.now() - startedAt),
+            retryable: false,
+            streamed: true,
+            usage: stream.usage,
+            ...(stream.failed ? { errorCategory: 'stream' as const } : {}),
+          };
+        } finally {
+          clearTimeout(totalStreamTimeout);
+        }
       }
 
       const upstreamData = Buffer.from(await upstreamResponse.arrayBuffer());
       const usage = usageFromResponseBody(upstreamData);
-      const durationMs = Math.round(performance.now() - startedAt);
       const adapted = upstreamResponse.status >= 200 && upstreamResponse.status < 300
         ? adaptUpstreamResponseToResponses(upstreamData, provider, originalPath, upstreamModel)
-        : {
-            body: upstreamData,
-            contentType: upstreamResponse.headers.get('content-type') ?? 'application/json',
-          };
+        : { body: upstreamData, contentType: upstreamResponse.headers.get('content-type') ?? 'application/json' };
       return {
-        provider,
-        status: upstreamResponse.status,
-        upstreamModel,
-        durationMs,
-        retryable: upstreamResponse.status >= 500,
-        streamed: false,
-        usage,
-        body: adapted.body,
-        contentType: adapted.contentType,
+        provider, status: upstreamResponse.status, upstreamModel,
+        durationMs: Math.round(performance.now() - startedAt),
+        retryable: upstreamResponse.status >= 500, streamed: false, usage, body: adapted.body, contentType: adapted.contentType,
+        ...(upstreamResponse.status >= 500 ? { errorCategory: 'upstream_5xx' as const } : {}),
       };
     } catch (error) {
       const aborted = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError');
-      const status = aborted ? 504 : 502;
-      const durationMs = Math.round(performance.now() - startedAt);
       return {
-        provider,
-        status,
-        upstreamModel,
-        durationMs,
-        retryable: true,
-        streamed: false,
-        usage: {},
+        provider, status: aborted ? 504 : 502, upstreamModel, durationMs: Math.round(performance.now() - startedAt),
+        retryable: true, streamed: false, usage: {}, errorCategory: aborted ? 'timeout' : 'network',
         errorPayload: {
           error: aborted ? abortReasonMessage(controller.signal) : error instanceof Error ? error.message : 'Upstream request failed',
-          provider: provider.name,
-          baseURL: provider.baseURL,
-          model: upstreamModel,
+          provider: provider.name, baseURL: provider.baseURL, model: upstreamModel,
         },
       };
     } finally {
@@ -444,10 +496,55 @@ export class LocalGatewayRuntime {
   private async candidateProviders(primaryProvider: Provider): Promise<Provider[]> {
     if (!this.routeSettings.failoverEnabled) return [primaryProvider];
     const providers = await this.providerService.routingProviders();
-    return [
-      primaryProvider,
-      ...providers.filter((provider) => provider.id !== primaryProvider.id),
-    ];
+    return [primaryProvider, ...providers.filter((provider) => provider.id !== primaryProvider.id)];
+  }
+
+  private circuitAvailable(providerId: string): boolean {
+    if (!this.routeSettings.failoverEnabled) return true;
+    const state = this.circuitStates.get(providerId);
+    if (!state?.openedAt) return true;
+    return Date.now() - state.openedAt >= this.routeSettings.failoverCooldownMs
+      && state.halfOpenInFlight < this.routeSettings.failoverHalfOpenMaxRequests;
+  }
+
+  private acquireCircuitPermit(providerId: string): { allowed: boolean; halfOpen: boolean } {
+    if (!this.routeSettings.failoverEnabled) return { allowed: true, halfOpen: false };
+    const state = this.circuitStates.get(providerId);
+    if (!state?.openedAt) return { allowed: true, halfOpen: false };
+    if (Date.now() - state.openedAt < this.routeSettings.failoverCooldownMs) return { allowed: false, halfOpen: false };
+    if (state.halfOpenInFlight >= this.routeSettings.failoverHalfOpenMaxRequests) return { allowed: false, halfOpen: false };
+    state.halfOpenInFlight++;
+    return { allowed: true, halfOpen: true };
+  }
+
+  private releaseHalfOpenPermit(providerId: string, halfOpen: boolean): void {
+    if (!halfOpen) return;
+    const state = this.circuitStates.get(providerId);
+    if (state) state.halfOpenInFlight = Math.max(0, state.halfOpenInFlight - 1);
+  }
+
+  private updateCircuitState(providerId: string, attempt: ForwardAttempt): void {
+    if (!this.routeSettings.failoverEnabled) return;
+    const state = this.circuitStates.get(providerId) ?? { consecutiveFailures: 0, openedAt: null, halfOpenInFlight: 0 };
+    const failed = attempt.retryable || attempt.errorCategory === 'stream';
+    if (!failed) {
+      state.consecutiveFailures = 0;
+      state.openedAt = null;
+    } else {
+      state.consecutiveFailures++;
+      if (state.consecutiveFailures >= this.routeSettings.failoverFailureThreshold) state.openedAt = Date.now();
+    }
+    this.circuitStates.set(providerId, state);
+  }
+
+  private recordUsageAttempt(
+    requestId: string, attemptNumber: number, failover: boolean, finalAttempt: boolean, attempt: ForwardAttempt,
+  ): Promise<void> {
+    return this.usage.record({
+      provider: attempt.provider.name, model: attempt.upstreamModel, status: attempt.status, durationMs: attempt.durationMs,
+      source: attempt.provider.apiFormat, ...attempt.usage, requestId, attempt: attemptNumber, failover, finalAttempt,
+      ...(attempt.errorCategory ? { errorCategory: attempt.errorCategory } : {}),
+    }).catch((error) => console.error('Failed to record usage:', error));
   }
 
   private async writeStreamingResponse(
@@ -457,6 +554,7 @@ export class LocalGatewayRuntime {
     upstreamModel: string,
     startedAt: number,
     onStreamChunk: () => void,
+    failover: boolean,
   ): Promise<StreamResult> {
     const durationMs = Math.round(performance.now() - startedAt);
     response.writeHead(200, {
@@ -464,7 +562,7 @@ export class LocalGatewayRuntime {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'Access-Control-Allow-Origin': 'http://127.0.0.1',
-      ...gatewayMetadataHeaders(provider, upstreamModel, durationMs),
+      ...gatewayMetadataHeaders(provider, upstreamModel, durationMs, failover),
     });
 
     if (!upstreamResponse.body) {
@@ -522,25 +620,42 @@ export class LocalGatewayRuntime {
     }
   }
 
-  private async recordUsage(
-    provider: Provider,
-    model: string,
-    status: number,
-    durationMs: number,
-    parsedUsage: ParsedUsage,
-  ): Promise<void> {
-    await this.usage.record({
-      provider: provider.name,
-      model,
-      status,
-      durationMs,
-      source: provider.apiFormat,
-      ...parsedUsage,
-    }).catch((error) => {
-      console.error('Failed to record usage:', error);
-    });
-  }
 
+}
+
+function clampInteger(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
+}
+
+function requestedModelFromRequestBody(body: Buffer): string {
+  try {
+    const payload = JSON.parse(body.toString('utf8')) as { model?: unknown };
+    return typeof payload.model === 'string' ? payload.model.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+function providerForAttempt(provider: Provider, body: Buffer, failover: boolean): Provider {
+  const mappedModel = failover ? validMappedModel(provider, requestedModelFromRequestBody(body)) : '';
+  const selected = mappedModel ? { ...provider, selectedModel: mappedModel } : providerForRequest(provider, body);
+  return { ...selected, apiFormat: upstreamAPIFormatForProvider(selected) };
+}
+
+function validMappedModel(provider: Provider, requestedModel: string): string {
+  const target = provider.failover?.modelMappings?.[requestedModel]?.trim();
+  if (!target) return '';
+  const model = provider.models.find((candidate) => candidate.customName === target || candidate.model === target);
+  return model?.customName || model?.model || '';
+}
+
+function totalDeadlineAttempt(provider: Provider, requestedModel: string, timeoutMs: number): ForwardAttempt {
+  return {
+    provider, status: 504, upstreamModel: requestedModel || providerSelectedCatalogModel(provider), durationMs: timeoutMs,
+    retryable: false, streamed: false, usage: {}, errorCategory: 'timeout',
+    errorPayload: { error: `Failover request exceeded total timeout of ${timeoutMs}ms`, provider: provider.name },
+  };
 }
 
 function safePort(port: number): number {
@@ -557,6 +672,11 @@ function defaultRuntimeRouteSettings(): RouteSettings {
     listenPort: 3456,
     allowLANListen: false,
     failoverEnabled: false,
+    failoverMaxAttempts: 3,
+    failoverTotalTimeoutMs: 180_000,
+    failoverFailureThreshold: 3,
+    failoverCooldownMs: 60_000,
+    failoverHalfOpenMaxRequests: 1,
   };
 }
 
@@ -573,6 +693,11 @@ function normalizeRuntimeRouteSettings(settings: RouteSettings): RouteSettings {
     listenPort: safePort(settings.listenPort),
     allowLANListen,
     failoverEnabled: Boolean(settings.failoverEnabled),
+    failoverMaxAttempts: clampInteger(settings.failoverMaxAttempts, 1, 20, defaults.failoverMaxAttempts),
+    failoverTotalTimeoutMs: clampInteger(settings.failoverTotalTimeoutMs, 1_000, 1_800_000, defaults.failoverTotalTimeoutMs),
+    failoverFailureThreshold: clampInteger(settings.failoverFailureThreshold, 1, 100, defaults.failoverFailureThreshold),
+    failoverCooldownMs: clampInteger(settings.failoverCooldownMs, 1_000, 3_600_000, defaults.failoverCooldownMs),
+    failoverHalfOpenMaxRequests: clampInteger(settings.failoverHalfOpenMaxRequests, 1, 20, defaults.failoverHalfOpenMaxRequests),
   };
 }
 

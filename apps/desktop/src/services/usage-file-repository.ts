@@ -28,6 +28,11 @@ interface UsageRow {
   input_tokens: number | null;
   output_tokens: number | null;
   cached_tokens: number | null;
+  request_id: string | null;
+  attempt: number | null;
+  failover: number | null;
+  final_attempt: number | null;
+  error_category: string | null;
   created_at: number;
 }
 
@@ -329,6 +334,7 @@ function usageSummary(database: SQLiteDatabase): UsageSummary {
       SUM(COALESCE(cached_tokens, 0)) AS cached_tokens,
       AVG(duration_ms) AS duration_ms
     FROM usage_records
+    WHERE final_attempt IS NOT 0
   `) ?? {
     total_requests: 0,
     successful_requests: 0,
@@ -377,7 +383,7 @@ function usageTrendRows(database: SQLiteDatabase): UsageTrendRow[] {
       SUM(COALESCE(output_tokens, 0)) AS output_tokens,
       SUM(COALESCE(cached_tokens, 0)) AS cached_tokens
     FROM usage_records
-    WHERE created_at >= ?
+    WHERE created_at >= ? AND final_attempt IS NOT 0
     GROUP BY day_key
   `, [from]);
 
@@ -402,6 +408,7 @@ function usageAggregateRows(database: SQLiteDatabase, column: 'provider' | 'mode
       SUM(COALESCE(cached_tokens, 0)) AS cached_tokens,
       AVG(duration_ms) AS duration_ms
     FROM usage_records
+    WHERE final_attempt IS NOT 0
     GROUP BY ${column}
     ORDER BY requests DESC, name ASC
   `);
@@ -469,6 +476,16 @@ function migrateSchema(database: SQLiteDatabase): void {
       value TEXT NOT NULL
     );
   `);
+  ensureColumn(database, 'usage_records', 'request_id', 'TEXT');
+  ensureColumn(database, 'usage_records', 'attempt', 'INTEGER');
+  ensureColumn(database, 'usage_records', 'failover', 'INTEGER');
+  ensureColumn(database, 'usage_records', 'final_attempt', 'INTEGER');
+  ensureColumn(database, 'usage_records', 'error_category', 'TEXT');
+}
+
+function ensureColumn(database: SQLiteDatabase, table: string, column: string, definition: string): void {
+  const columns = getAll<{ name: string }>(database, `PRAGMA table_info(${table})`);
+  if (!columns.some((entry) => entry.name === column)) database.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 function insertUsageRecord(database: SQLiteDatabase, record: UsageRecord): void {
@@ -483,8 +500,13 @@ function insertUsageRecord(database: SQLiteDatabase, record: UsageRecord): void 
       input_tokens,
       output_tokens,
       cached_tokens,
+      request_id,
+      attempt,
+      failover,
+      final_attempt,
+      error_category,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     record.id,
     record.provider,
@@ -495,6 +517,11 @@ function insertUsageRecord(database: SQLiteDatabase, record: UsageRecord): void 
     record.inputTokens ?? null,
     record.outputTokens ?? null,
     record.cachedTokens ?? null,
+    record.requestId ?? null,
+    record.attempt ?? null,
+    record.failover === undefined ? null : Number(record.failover),
+    record.finalAttempt === undefined ? null : Number(record.finalAttempt),
+    record.errorCategory ?? null,
     record.createdAt,
   ]);
 }
@@ -586,6 +613,11 @@ function recordFromRow(row: UsageRow): UsageRecord {
   if (row.input_tokens !== null) record.inputTokens = row.input_tokens;
   if (row.output_tokens !== null) record.outputTokens = row.output_tokens;
   if (row.cached_tokens !== null) record.cachedTokens = row.cached_tokens;
+  if (row.request_id) record.requestId = row.request_id;
+  if (row.attempt !== null) record.attempt = row.attempt;
+  if (row.failover !== null) record.failover = Boolean(row.failover);
+  if (row.final_attempt !== null) record.finalAttempt = Boolean(row.final_attempt);
+  if (row.error_category) record.errorCategory = row.error_category;
   return record;
 }
 
@@ -616,6 +648,12 @@ function normalizeUsageRecord(value: unknown): UsageRecord | null {
   if (outputTokens !== undefined) normalized.outputTokens = outputTokens;
   const cachedTokens = optionalNumber(record.cachedTokens);
   if (cachedTokens !== undefined) normalized.cachedTokens = cachedTokens;
+  if (typeof record.requestId === 'string' && record.requestId.trim()) normalized.requestId = record.requestId.trim();
+  const attempt = optionalNumber(record.attempt);
+  if (attempt !== undefined) normalized.attempt = attempt;
+  if (typeof record.failover === 'boolean') normalized.failover = record.failover;
+  if (typeof record.finalAttempt === 'boolean') normalized.finalAttempt = record.finalAttempt;
+  if (typeof record.errorCategory === 'string' && record.errorCategory.trim()) normalized.errorCategory = record.errorCategory.trim();
   return normalized;
 }
 

@@ -1297,6 +1297,11 @@ function defaultRouteSettings(): RouteSettings {
     listenPort: 3456,
     allowLANListen: false,
     failoverEnabled: false,
+    failoverMaxAttempts: 3,
+    failoverTotalTimeoutMs: 180_000,
+    failoverFailureThreshold: 3,
+    failoverCooldownMs: 60_000,
+    failoverHalfOpenMaxRequests: 1,
   };
 }
 
@@ -1312,6 +1317,11 @@ async function getRouteSettings(): Promise<RouteSettings> {
     listenPort: safeRoutePort(await settings.getNumber('routeListenPort') ?? defaults.listenPort),
     allowLANListen: await settings.getBoolean('routeAllowLANListen') ?? defaults.allowLANListen,
     failoverEnabled: await settings.getBoolean('routeFailoverEnabled') ?? defaults.failoverEnabled,
+    failoverMaxAttempts: normalizeIntegerSetting(await settings.getNumber('routeFailoverMaxAttempts'), 1, 20, defaults.failoverMaxAttempts),
+    failoverTotalTimeoutMs: normalizeIntegerSetting(await settings.getNumber('routeFailoverTotalTimeoutMs'), 1_000, 1_800_000, defaults.failoverTotalTimeoutMs),
+    failoverFailureThreshold: normalizeIntegerSetting(await settings.getNumber('routeFailoverFailureThreshold'), 1, 100, defaults.failoverFailureThreshold),
+    failoverCooldownMs: normalizeIntegerSetting(await settings.getNumber('routeFailoverCooldownMs'), 1_000, 3_600_000, defaults.failoverCooldownMs),
+    failoverHalfOpenMaxRequests: normalizeIntegerSetting(await settings.getNumber('routeFailoverHalfOpenMaxRequests'), 1, 20, defaults.failoverHalfOpenMaxRequests),
   };
 }
 
@@ -1410,6 +1420,11 @@ async function persistRouteSettings(settingsValue: RouteSettings): Promise<void>
   await settings.setNumber('routeListenPort', settingsValue.listenPort);
   await settings.setBoolean('routeAllowLANListen', settingsValue.allowLANListen);
   await settings.setBoolean('routeFailoverEnabled', settingsValue.failoverEnabled);
+  await settings.setNumber('routeFailoverMaxAttempts', settingsValue.failoverMaxAttempts);
+  await settings.setNumber('routeFailoverTotalTimeoutMs', settingsValue.failoverTotalTimeoutMs);
+  await settings.setNumber('routeFailoverFailureThreshold', settingsValue.failoverFailureThreshold);
+  await settings.setNumber('routeFailoverCooldownMs', settingsValue.failoverCooldownMs);
+  await settings.setNumber('routeFailoverHalfOpenMaxRequests', settingsValue.failoverHalfOpenMaxRequests);
 }
 
 function normalizeRouteSettings(input: RouteSettings): RouteSettings {
@@ -1426,6 +1441,11 @@ function normalizeRouteSettings(input: RouteSettings): RouteSettings {
     listenPort: safeRoutePort(input.listenPort),
     allowLANListen,
     failoverEnabled: Boolean(input.failoverEnabled),
+    failoverMaxAttempts: normalizeIntegerSetting(input.failoverMaxAttempts, 1, 20, defaults.failoverMaxAttempts),
+    failoverTotalTimeoutMs: normalizeIntegerSetting(input.failoverTotalTimeoutMs, 1_000, 1_800_000, defaults.failoverTotalTimeoutMs),
+    failoverFailureThreshold: normalizeIntegerSetting(input.failoverFailureThreshold, 1, 100, defaults.failoverFailureThreshold),
+    failoverCooldownMs: normalizeIntegerSetting(input.failoverCooldownMs, 1_000, 3_600_000, defaults.failoverCooldownMs),
+    failoverHalfOpenMaxRequests: normalizeIntegerSetting(input.failoverHalfOpenMaxRequests, 1, 20, defaults.failoverHalfOpenMaxRequests),
   };
 }
 
@@ -1468,6 +1488,11 @@ async function assertProviderSupportsDirectMode(provider: Provider): Promise<voi
 function allModelsUseResponses(provider: Pick<Provider, 'apiFormat' | 'models' | 'baseURL'>): boolean {
   if (new URL(provider.baseURL).hostname === 'api.deepseek.com') return false;
   return provider.models.every((model) => (model.apiFormat ?? provider.apiFormat) === 'responses');
+}
+
+function normalizeIntegerSetting(value: number | null | undefined, min: number, max: number, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return fallback;
+  return Math.min(max, Math.max(min, value));
 }
 
 function safeRoutePort(port: number): number {

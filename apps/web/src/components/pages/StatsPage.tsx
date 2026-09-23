@@ -58,6 +58,15 @@ export function StatsPage({
     { title: text('输出 Token', 'Output'), dataIndex: 'outputTokens', width: 120, render: (value?: number) => formatNumber(value ?? 0) },
     { title: text('缓存 Token', 'Cached'), dataIndex: 'cachedTokens', width: 120, render: (value?: number) => formatNumber(value ?? 0) },
     { title: text('耗时', 'Duration'), dataIndex: 'durationMs', width: 120, render: (value: number) => `${Math.round(value)}ms` },
+    {
+      title: text('转移尝试', 'Failover attempt'),
+      key: 'failoverAttempt',
+      width: 150,
+      render: (_, record) => record.attempt
+        ? <Tag color={record.failover ? 'warning' : 'default'}>{record.failover ? text(`备用 #${record.attempt}`, `Backup #${record.attempt}`) : text(`主路由 #${record.attempt}`, `Primary #${record.attempt}`)}</Tag>
+        : '-',
+    },
+    { title: text('错误分类', 'Error category'), dataIndex: 'errorCategory', width: 160, render: (value?: string) => value || '-' },
     { title: text('来源', 'Source'), dataIndex: 'source', width: 180 },
   ];
 
