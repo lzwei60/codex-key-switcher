@@ -15,10 +15,12 @@ Every public release must upload these installer assets:
 
 The in-app updater selects the installer by file name. Do not rename release assets unless the matching logic in `apps/desktop/src/main/main.ts` is updated in the same release.
 
+The packaged application names are also fixed for upgrade compatibility: `Codex Key Switcher.app` on macOS, `codex-key-switcher.exe` inside the Windows installer, and `codex-key-switcher` inside Linux packages. On macOS, drag the new app over the existing `Codex Key Switcher.app` in `/Applications`; do not keep both a renamed old app and the new app.
+
 ## Versioning
 
 1. Update `version` in `apps/desktop/package.json`.
-2. Use a matching Git tag, for example `v1.0.4`.
+2. Use a matching Git tag, for example `v1.0.5`.
 3. The GitHub Release marked as latest must use that same tag.
 
 The update check compares `app.getVersion()` with the latest GitHub Release tag or release name after removing a leading `v`.
@@ -44,7 +46,7 @@ pnpm --filter @codex-key-switcher/desktop dist:win
 pnpm --filter @codex-key-switcher/desktop dist:linux
 ```
 
-4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.4`.
+4. Create a GitHub Release with a tag matching the desktop version, for example `v1.0.5`.
 5. Upload the four platform asset groups from the `release/` directory.
 6. Mark the GitHub Release as the latest release.
 7. Install the previous desktop version and verify Settings -> Updates:
@@ -64,6 +66,39 @@ The current project intentionally ships unsigned installers. This means:
 - Release notes should tell users that the installer is unsigned and must be downloaded from this repository's GitHub Releases page.
 
 Signing and notarization should be added before treating this as a production-grade public distribution flow.
+
+## v1.0.5 Release Notes
+
+### Release Scope
+
+`v1.0.5` is a local gateway reliability release. It adds configurable provider failover, circuit protection, fallback model mapping, attempt-level usage records, and safer runtime configuration updates.
+
+### New Features
+
+- Configure local-gateway failover attempts, total timeout, failure threshold, cooldown, and half-open concurrency.
+- Configure provider priority and fallback model mappings for failover requests.
+- Record every failover attempt with request ID, attempt number, final-attempt state, error category, provider, model, status, and duration.
+
+### Fixes and Improvements
+
+- Restart the local gateway when its listen address or port changes instead of leaving the old listener active.
+- Clear stale circuit-breaker state when failover is disabled.
+- Continue the failover chain when a backup provider credential cannot be read, while recording the credential error.
+- Release half-open circuit permits on every attempt outcome, including exceptions.
+- Preserve existing provider, credential, usage, and connection settings during upgrade.
+
+### Upgrade Notes
+
+- Existing providers and route settings are preserved. New failover settings use conservative defaults when absent.
+- Chat Completions and Anthropic models still require local gateway mode; direct provider mode requires Responses.
+- Installers are still unsigned and not notarized. Download them only from this repository's GitHub Releases page.
+
+### Installers
+
+- macOS Apple Silicon: `Codex-Key-Switcher-1.0.5-arm64.dmg`
+- macOS Intel: `Codex-Key-Switcher-1.0.5-x64.dmg`
+- Windows x64: `Codex-Key-Switcher-Setup-1.0.5-x64.exe`
+- Linux x64: `Codex-Key-Switcher-1.0.5-x86_64.AppImage` and `Codex-Key-Switcher-1.0.5-amd64.deb`
 
 ## v1.0.4 Release Notes
 

@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 // Electron's main-process and preload boundaries cannot be exercised by a
 // browser-only preview. Point this script at a local playwright-core install.
 const { _electron: electron } = await import(pathToFileURL(process.env.PLAYWRIGHT_CORE_PATH).href);
-const executablePath = process.env.TEST_APP_EXECUTABLE ?? '/Applications/Codex Key Switcher.app/Contents/MacOS/codex-key-switcher';
+const executablePath = process.env.TEST_APP_EXECUTABLE ?? '/Applications/Codex Key Switcher.app/Contents/MacOS/Codex Key Switcher';
 const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cksw-installed-qa-'));
 const profile = path.join(root, 'profile');
 const codex = path.join(root, 'codex');

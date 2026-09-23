@@ -31,6 +31,11 @@ const fallbackRouteSettings: RouteSettings = {
   listenPort: 3456,
   allowLANListen: false,
   failoverEnabled: false,
+  failoverMaxAttempts: 3,
+  failoverTotalTimeoutMs: 180_000,
+  failoverFailureThreshold: 3,
+  failoverCooldownMs: 60_000,
+  failoverHalfOpenMaxRequests: 1,
 };
 
 let fallbackGatewayRunning = false;

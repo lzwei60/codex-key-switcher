@@ -97,6 +97,201 @@ describe('LocalGatewayRuntime', () => {
     }
   });
 
+  it('fails over from a retryable 5xx to the next provider and records every attempt', async () => {
+    const firstHits = vi.fn();
+    const first = http.createServer((_request, response) => {
+      firstHits();
+      response.writeHead(503, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'unavailable' }));
+    });
+    const secondHits = vi.fn();
+    const second = http.createServer((_request, response) => {
+      secondHits();
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-backup', status: 'completed', output: [] }));
+    });
+    const primary = providerFixture(`http://127.0.0.1:${await listen(first)}/v1`);
+    const backup = { ...providerFixture(`http://127.0.0.1:${await listen(second)}/v1`), id: 'provider-2', name: 'Backup', updatedAt: 2 };
+    const record = vi.fn(async (_record: unknown) => undefined);
+    const runtime = new LocalGatewayRuntime(providerServiceFixtures(primary, [primary, backup]), codexConfigFixture(), { record } as unknown as UsageService);
+    const settings = { ...routeSettingsFixture(await availablePort()), failoverEnabled: true };
+    const status = await runtime.start(settings);
+    try {
+      const response = await fetch(`${status.endpoint}/responses`, {
+        method: 'POST', headers: { Authorization: 'Bearer local-gateway-key', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-5', input: 'hello', stream: false }),
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-ai-key-switcher-failover')).toBe('true');
+      expect(firstHits).toHaveBeenCalledTimes(1);
+      expect(secondHits).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(2));
+      expect(record.mock.calls[0]?.[0]).toMatchObject({ attempt: 1, failover: false, finalAttempt: false, status: 503 });
+      expect(record.mock.calls[1]?.[0]).toMatchObject({ attempt: 2, failover: true, finalAttempt: true, status: 200 });
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('does not fail over on an upstream 4xx', async () => {
+    const first = http.createServer((_request, response) => {
+      response.writeHead(401, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'unauthorized' }));
+    });
+    const secondHits = vi.fn();
+    const second = http.createServer(secondHits);
+    const primary = providerFixture(`http://127.0.0.1:${await listen(first)}/v1`);
+    const backup = { ...providerFixture(`http://127.0.0.1:${await listen(second)}/v1`), id: 'provider-2', updatedAt: 2 };
+    const runtime = new LocalGatewayRuntime(providerServiceFixtures(primary, [primary, backup]), codexConfigFixture(), usageServiceFixture());
+    const status = await runtime.start({ ...routeSettingsFixture(await availablePort()), failoverEnabled: true });
+    try {
+      const response = await fetch(`${status.endpoint}/responses`, {
+        method: 'POST', headers: { Authorization: 'Bearer local-gateway-key', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-5', input: 'hello', stream: false }),
+      });
+      expect(response.status).toBe(401);
+      expect(secondHits).not.toHaveBeenCalled();
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('opens the primary circuit after repeated retryable failures', async () => {
+    const primaryHits = vi.fn();
+    const first = http.createServer((_request, response) => {
+      primaryHits();
+      response.writeHead(503).end();
+    });
+    const second = http.createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-backup', status: 'completed', output: [] }));
+    });
+    const primary = providerFixture(`http://127.0.0.1:${await listen(first)}/v1`);
+    const backup = { ...providerFixture(`http://127.0.0.1:${await listen(second)}/v1`), id: 'provider-2', updatedAt: 2 };
+    const runtime = new LocalGatewayRuntime(providerServiceFixtures(primary, [primary, backup]), codexConfigFixture(), usageServiceFixture());
+    const status = await runtime.start({
+      ...routeSettingsFixture(await availablePort()), failoverEnabled: true, failoverFailureThreshold: 2, failoverCooldownMs: 60_000,
+    });
+    try {
+      for (let index = 0; index < 3; index++) {
+        const response = await fetch(`${status.endpoint}/responses`, {
+          method: 'POST', headers: { Authorization: 'Bearer local-gateway-key', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'gpt-5', input: 'hello', stream: false }),
+        });
+        expect(response.status).toBe(200);
+      }
+      expect(primaryHits).toHaveBeenCalledTimes(2);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('rebinds the gateway when the listen port changes', async () => {
+    const upstream = http.createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-status', status: 'completed', output: [] }));
+    });
+    const upstreamPort = await listen(upstream);
+    const provider = providerFixture(`http://127.0.0.1:${upstreamPort}/v1`);
+    const runtime = new LocalGatewayRuntime(providerServiceFixture(provider), codexConfigFixture(), usageServiceFixture());
+    const firstPort = await availablePort();
+    const secondPort = await availablePort();
+
+    const firstStatus = await runtime.start(routeSettingsFixture(firstPort));
+    try {
+      const secondStatus = await runtime.start({ ...routeSettingsFixture(secondPort), failoverEnabled: true });
+
+      expect(secondStatus.endpoint).toContain(`:${secondPort}/v1`);
+      await expect(fetch(`${firstStatus.endpoint}/__status`, {
+        headers: { Authorization: 'Bearer local-gateway-key' },
+      })).rejects.toThrow();
+      await expect(fetch(`${secondStatus.endpoint}/__status`, {
+        headers: { Authorization: 'Bearer local-gateway-key' },
+      })).resolves.toMatchObject({ status: 200 });
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('ignores stale circuit state after failover is disabled', async () => {
+    const primaryHits = vi.fn();
+    const primaryServer = http.createServer((_request, response) => {
+      primaryHits();
+      response.writeHead(503, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'unavailable' }));
+    });
+    const backupServer = http.createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-backup', status: 'completed', output: [] }));
+    });
+    const primary = providerFixture(`http://127.0.0.1:${await listen(primaryServer)}/v1`);
+    const backup = { ...providerFixture(`http://127.0.0.1:${await listen(backupServer)}/v1`), id: 'provider-2', name: 'Backup' };
+    const runtime = new LocalGatewayRuntime(providerServiceFixtures(primary, [primary, backup]), codexConfigFixture(), usageServiceFixture());
+    const port = await availablePort();
+    const enabledSettings = {
+      ...routeSettingsFixture(port),
+      failoverEnabled: true,
+      failoverFailureThreshold: 1,
+    };
+
+    await runtime.start(enabledSettings);
+    try {
+      const firstResponse = await fetch(`http://127.0.0.1:${port}/v1/responses`, requestOptions());
+      expect(firstResponse.status).toBe(200);
+      expect(primaryHits).toHaveBeenCalledTimes(1);
+
+      await runtime.start({ ...enabledSettings, failoverEnabled: false });
+      const secondResponse = await fetch(`http://127.0.0.1:${port}/v1/responses`, requestOptions());
+      expect(secondResponse.status).toBe(503);
+      expect(primaryHits).toHaveBeenCalledTimes(2);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
+  it('continues to the next provider when a backup credential read fails', async () => {
+    const primaryServer = http.createServer((_request, response) => {
+      response.writeHead(503, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ error: 'unavailable' }));
+    });
+    const backupServer = http.createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-unexpected', status: 'completed', output: [] }));
+    });
+    const healthyServer = http.createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 'resp-healthy', status: 'completed', output: [] }));
+    });
+    const primary = providerFixture(`http://127.0.0.1:${await listen(primaryServer)}/v1`);
+    const backup = { ...providerFixture(`http://127.0.0.1:${await listen(backupServer)}/v1`), id: 'provider-2', name: 'Broken credentials' };
+    const healthy = { ...providerFixture(`http://127.0.0.1:${await listen(healthyServer)}/v1`), id: 'provider-3', name: 'Healthy' };
+    const record = vi.fn(async (_record: unknown) => undefined);
+    const providerService = {
+      current: async () => primary,
+      currentRoutingProviderWithApiKey: async () => ({ provider: primary, apiKey: 'upstream-key' }),
+      routingProviders: async () => [primary, backup, healthy],
+      currentApiKey: async (provider: Provider) => {
+        if (provider.id === backup.id) throw new Error('credential backend unavailable');
+        return 'upstream-key';
+      },
+    } as unknown as ProviderService;
+    const runtime = new LocalGatewayRuntime(providerService, codexConfigFixture(), { record } as unknown as UsageService);
+    const status = await runtime.start({ ...routeSettingsFixture(await availablePort()), failoverEnabled: true, failoverMaxAttempts: 3 });
+
+    try {
+      const response = await fetch(`${status.endpoint}/responses`, requestOptions());
+      expect(response.status).toBe(200);
+      await vi.waitFor(() => expect(record).toHaveBeenCalledTimes(3));
+      expect(record.mock.calls.map(([attempt]) => attempt)).toEqual([
+        expect.objectContaining({ attempt: 1, finalAttempt: false }),
+        expect.objectContaining({ attempt: 2, errorCategory: 'credential_error', finalAttempt: false }),
+        expect.objectContaining({ attempt: 3, finalAttempt: true }),
+      ]);
+    } finally {
+      await runtime.stop();
+    }
+  });
+
   it('returns a clear 400 before contacting an incompatible history target', async () => {
     const contacted = vi.fn();
     const upstream = http.createServer(contacted);
@@ -229,7 +424,21 @@ function routeSettingsFixture(listenPort: number): RouteSettings {
     listenPort,
     allowLANListen: false,
     failoverEnabled: false,
+  failoverMaxAttempts: 3,
+  failoverTotalTimeoutMs: 180_000,
+  failoverFailureThreshold: 3,
+  failoverCooldownMs: 60_000,
+  failoverHalfOpenMaxRequests: 1,
   };
+}
+
+function providerServiceFixtures(current: Provider, providers: Provider[]): ProviderService {
+  return {
+    current: async () => current,
+    currentRoutingProviderWithApiKey: async () => ({ provider: current, apiKey: 'upstream-key' }),
+    routingProviders: async () => providers,
+    currentApiKey: async () => 'upstream-key',
+  } as unknown as ProviderService;
 }
 
 function providerServiceFixture(provider: Provider): ProviderService {
@@ -306,4 +515,12 @@ function sseEventTypes(stream: string): string[] {
     .split(/\r?\n/)
     .filter((line) => line.startsWith('event:'))
     .map((line) => line.slice(6).trim());
+}
+
+function requestOptions(): RequestInit {
+  return {
+    method: 'POST',
+    headers: { Authorization: 'Bearer local-gateway-key', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5', input: 'hello', stream: false }),
+  };
 }

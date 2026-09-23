@@ -20,6 +20,11 @@ export function planRouteSettingsChange(previous: RouteSettings, next: RouteSett
       || previous.listenPort !== next.listenPort
       || previous.allowLANListen !== next.allowLANListen
       || previous.failoverEnabled !== next.failoverEnabled
+      || previous.failoverMaxAttempts !== next.failoverMaxAttempts
+      || previous.failoverTotalTimeoutMs !== next.failoverTotalTimeoutMs
+      || previous.failoverFailureThreshold !== next.failoverFailureThreshold
+      || previous.failoverCooldownMs !== next.failoverCooldownMs
+      || previous.failoverHalfOpenMaxRequests !== next.failoverHalfOpenMaxRequests
     );
   const codexConfigChanged = connectionModeChanged
     || enabledChanged
@@ -50,5 +55,10 @@ export function routeSettingsEqual(left: RouteSettings, right: RouteSettings): b
     && left.listenAddress === right.listenAddress
     && left.listenPort === right.listenPort
     && left.allowLANListen === right.allowLANListen
-    && left.failoverEnabled === right.failoverEnabled;
+    && left.failoverEnabled === right.failoverEnabled
+    && left.failoverMaxAttempts === right.failoverMaxAttempts
+    && left.failoverTotalTimeoutMs === right.failoverTotalTimeoutMs
+    && left.failoverFailureThreshold === right.failoverFailureThreshold
+    && left.failoverCooldownMs === right.failoverCooldownMs
+    && left.failoverHalfOpenMaxRequests === right.failoverHalfOpenMaxRequests;
 }

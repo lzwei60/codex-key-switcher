@@ -38,6 +38,7 @@ pnpm --filter @codex-key-switcher/desktop dist:mac:arm64
 - Keep `package.json`, `apps/desktop/package.json`, `apps/web/package.json`, `packages/core/package.json`, and `packages/shared/package.json` on the same version.
 - GitHub Release tags use a leading `v`, for example `v1.0.0`.
 - Application and package metadata use the bare semantic version, for example `1.0.0`.
+- Keep the packaged application identity stable: macOS uses `Codex Key Switcher.app`, Windows uses `codex-key-switcher.exe`, and Linux uses `codex-key-switcher`. Do not rename an installed app manually or introduce a platform naming variant.
 - Update the user guides and release notes whenever installer names, supported platforms, update behavior, or migration behavior changes.
 - Do not rename release assets unless the updater matching logic is changed in the same pull request.
 

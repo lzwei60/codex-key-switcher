@@ -4,6 +4,7 @@ import type {
   ProviderExportPayload,
   ProviderInput,
   ProviderModel,
+  ProviderFailoverSettings,
 } from '@codex-key-switcher/shared';
 import { providerCatalogSlug } from './provider-models';
 
@@ -86,7 +87,9 @@ export class ProviderService {
     for (const provider of providers) {
       normalized.push(normalizeStoredProvider(provider as LegacyProvider));
     }
-    return normalized.sort((a, b) => a.updatedAt - b.updatedAt);
+    return normalized
+      .filter((provider) => provider.failover?.enabled !== false)
+      .sort((a, b) => providerFailoverPriority(a) - providerFailoverPriority(b) || a.updatedAt - b.updatedAt);
   }
 
   async upsert(input: ProviderInput): Promise<Provider> {
@@ -275,6 +278,7 @@ export class ProviderService {
     }, model)));
     if (duplicatedCatalogSlug) throw new Error(`模型 Catalog 标识重复：${duplicatedCatalogSlug}`);
 
+    assertValidFailoverModelMappings(input.failover, models);
     const selectedModel = selectedModelName(models, input.selectedModel?.trim() || '') || models[0]?.customName || models[0]?.model;
     if (!selectedModel) throw new Error('请选择模型。');
 
@@ -290,6 +294,7 @@ export class ProviderService {
     };
     const tag = input.tag?.trim();
     if (tag) provider.tag = tag;
+    provider.failover = normalizeProviderFailover(input.failover ?? existing?.failover);
     return provider;
   }
 
@@ -403,6 +408,7 @@ function normalizeImportedProvider(incoming: LegacyProviderExportItem): Provider
     selectedModel: incoming.selectedModel,
   };
   if (incoming.tag) input.tag = incoming.tag;
+  if (incoming.failover) input.failover = incoming.failover;
   if (incoming.apiKey) input.apiKey = incoming.apiKey;
 
   try {
@@ -429,6 +435,7 @@ function normalizeProviderInput(input: ProviderInput): Provider {
   const duplicated = findDuplicate(models.map((model) => model.customName));
   if (duplicated) throw new Error(`模型自定义名称重复：${duplicated}`);
 
+  assertValidFailoverModelMappings(input.failover, models);
   const selectedModel = selectedModelName(models, input.selectedModel?.trim() || '') || models[0]?.customName || models[0]?.model;
   if (!selectedModel) throw new Error('请选择模型。');
 
@@ -440,6 +447,7 @@ function normalizeProviderInput(input: ProviderInput): Provider {
     models,
     selectedModel,
     keyPreview: '需要重新填写 Key',
+    failover: normalizeProviderFailover(input.failover),
     updatedAt: Date.now(),
   };
   const tag = input.tag?.trim();
@@ -485,9 +493,42 @@ function normalizeStoredProvider(provider: LegacyProvider): Provider {
     updatedAt: Number(provider.updatedAt) || Date.now(),
   };
   if (provider.tag) normalized.tag = provider.tag;
+  normalized.failover = normalizeProviderFailover(provider.failover);
   return normalized;
 }
 
+
+function assertValidFailoverModelMappings(value: ProviderFailoverSettings | undefined, models: ProviderModel[]): void {
+  for (const target of Object.values(value?.modelMappings ?? {})) {
+    const normalizedTarget = typeof target === 'string' ? target.trim() : '';
+    if (normalizedTarget && !selectedModelName(models, normalizedTarget)) {
+      throw new Error(`备用模型映射目标不存在：${normalizedTarget}`);
+    }
+  }
+}
+
+function normalizeProviderFailover(value: ProviderFailoverSettings | undefined): ProviderFailoverSettings {
+  const priority = typeof value?.priority === 'number' && Number.isFinite(value.priority)
+    ? Math.max(0, Math.min(10_000, Math.round(value.priority)))
+    : 100;
+  const modelMappings: Record<string, string> = {};
+  if (value?.modelMappings && typeof value.modelMappings === 'object') {
+    for (const [source, target] of Object.entries(value.modelMappings)) {
+      const normalizedSource = source.trim();
+      const normalizedTarget = typeof target === 'string' ? target.trim() : '';
+      if (normalizedSource && normalizedTarget) modelMappings[normalizedSource] = normalizedTarget;
+    }
+  }
+  return {
+    enabled: value?.enabled !== false,
+    priority,
+    modelMappings,
+  };
+}
+
+function providerFailoverPriority(provider: Provider): number {
+  return provider.failover?.priority ?? 100;
+}
 function selectedLegacyProviderKey(provider: LegacyProvider): LegacyProviderKey | null {
   const keys = legacyProviderKeys(provider);
   if (!keys.length) return null;
