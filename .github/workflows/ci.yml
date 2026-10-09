@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   pull_request:
     branches:
       - main
@@ -50,3 +51,125 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  tauri-rust:
+    name: Tauri Rust checks
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build static renderer for Tauri context
+        run: pnpm --filter @codex-key-switcher/web build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+
+      - name: Test isolated native services
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+
+      - name: Build native release
+        run: cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --release --features custom-protocol --locked
+
+  tauri-package:
+    name: Tauri package (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-14
+            bundles: app
+            artifact: tauri-macos-arm64-app
+          - platform: windows-x64
+            os: windows-latest
+            bundles: nsis
+            artifact: tauri-windows-x64-nsis
+          - platform: linux-x64
+            os: ubuntu-latest
+            bundles: appimage,deb
+            artifact: tauri-linux-x64-packages
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux Tauri dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            patchelf \
+            wget
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Build Tauri bundle
+        run: pnpm --filter @codex-key-switcher/desktop exec tauri build --ci --bundles "${{ matrix.bundles }}" --no-sign
+
+      - name: Verify bundle layout
+        run: node scripts/verify-tauri-bundle.mjs apps/desktop/src-tauri/target/release/bundle
+
+      - name: List bundle artifacts
+        shell: bash
+        run: find apps/desktop/src-tauri/target/release/bundle -type f -maxdepth 4 -print
+
+      - name: Upload Tauri artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: apps/desktop/src-tauri/target/release/bundle
+          if-no-files-found: error
+          retention-days: 7

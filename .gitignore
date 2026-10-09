@@ -9,4 +9,6 @@ release
 .DS_Store
 coverage
 *.tsbuildinfo
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
 output/playwright/

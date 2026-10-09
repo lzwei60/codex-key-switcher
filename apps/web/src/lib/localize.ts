@@ -6,6 +6,7 @@ export function localizeRuntimeMessage(value: string, text: LocalizeText): strin
 
   const exact: Record<string, [string, string]> = {
     '配置不存在。': ['配置不存在。', 'Configuration not found.'],
+    '运行中的本地网关至少需要一个供应商。': ['运行中的本地网关至少需要一个供应商。', 'A running local gateway requires at least one provider.'],
     '模型不存在，无法切换。': ['模型不存在，无法切换。', 'Model not found; it cannot be selected.'],
     '未选择供应商': ['未选择供应商', 'No provider selected'],
     '操作失败': ['操作失败', 'Operation failed'],
@@ -26,12 +27,15 @@ export function localizeRuntimeMessage(value: string, text: LocalizeText): strin
     '直连供应商模式仅支持 Responses 格式供应商；当前配置请先切换到本地路由模式，或保持 Responses 格式。': ['直连供应商模式仅支持 Responses 格式供应商；当前配置请先切换到本地路由模式，或保持 Responses 格式。', 'Direct provider mode supports Responses providers only. Switch to local gateway mode or keep the Responses format.'],
     '直连供应商模式仅支持 Responses 格式供应商；Chat Completions 和 Anthropic 请使用本地路由模式。': ['直连供应商模式仅支持 Responses 格式供应商；Chat Completions 和 Anthropic 请使用本地路由模式。', 'Direct provider mode supports Responses providers only. Use local gateway mode for Chat Completions and Anthropic.'],
     '当前供应商缺少本地 API Key，无法启用直连供应商模式。': ['当前供应商缺少本地 API Key，无法启用直连供应商模式。', 'The current provider has no locally saved API key, so direct provider mode cannot be enabled.'],
+    '直连配置仅支持 Responses 格式供应商。': ['直连配置仅支持 Responses 格式供应商。', 'Direct configuration only supports Responses-format providers.'],
     '请先添加并选择一个供应商，再启用直连供应商模式。': ['请先添加并选择一个供应商，再启用直连供应商模式。', 'Add and select a provider before enabling direct provider mode.'],
     '切换连接模式后需要重启 Codex。': ['切换连接模式后需要重启 Codex。', 'Restart Codex after switching the connection mode.'],
     '连接服务已停止，但 Codex 配置恢复失败。': ['连接服务已停止，但 Codex 配置恢复失败。', 'The connection service stopped, but the Codex configuration could not be restored.'],
     '连接服务已停止，Codex 配置已恢复。': ['连接服务已停止，Codex 配置已恢复。', 'The connection service stopped and the Codex configuration was restored.'],
     '连接服务已停止，Codex 配置无需恢复。': ['连接服务已停止，Codex 配置无需恢复。', 'The connection service stopped; no Codex configuration restore was needed.'],
     '未找到恢复脚本。': ['未找到恢复脚本。', 'The restore script was not found.'],
+    '浏览器预览模式不支持凭据迁移。': ['浏览器预览模式不支持凭据迁移。', 'Credential migration is unavailable in browser preview mode.'],
+    'Electron 版本不接收 Tauri 凭据迁移包。': ['Electron 版本不接收 Tauri 凭据迁移包。', 'The Electron version does not accept Tauri credential migration packages.'],
   };
   const known = exact[message];
   if (known) return text(known[0], known[1]);

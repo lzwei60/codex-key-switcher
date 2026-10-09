@@ -6,6 +6,9 @@ import './styles.css';
 export const metadata: Metadata = {
   title: 'Codex Key Switcher',
   description: 'Cross-platform Codex provider and gateway manager',
+  icons: {
+    icon: './icon.png',
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

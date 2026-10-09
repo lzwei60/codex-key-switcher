@@ -201,6 +201,7 @@ export function ProviderFormDrawer({
 
   return (
     <Drawer
+      className="provider-form-drawer"
       destroyOnClose
       extra={
         <Space>
@@ -289,21 +290,25 @@ export function ProviderFormDrawer({
         <Form.Item label={text('标签', 'Tag')} name="tag">
           <Input placeholder={text('默认、备用、内网等', 'Default, backup, internal, etc.')} />
         </Form.Item>
-        <Space className="route-row" size={16} wrap>
-          <Form.Item label={text('加入故障转移', 'Include in failover')} name="failoverEnabled" valuePropName="checked">
-            <Switch />
+        {provider ? (
+          <Space className="route-row" size={16} wrap>
+            <Form.Item label={text('加入故障转移', 'Include in failover')} name="failoverEnabled" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+            <Form.Item label={text('故障转移优先级', 'Failover priority')} name="failoverPriority" extra={text('数值越小越优先；当前供应商始终先尝试。', 'Lower values run first; the current provider is always attempted first.')}>
+              <InputNumber min={0} max={10000} />
+            </Form.Item>
+          </Space>
+        ) : null}
+        {provider ? (
+          <Form.Item
+            label={text('备用模型映射', 'Failover model mappings')}
+            name="failoverModelMappings"
+            extra={text('每行一个：请求模型=该供应商模型别名或上游模型。', 'One per line: requested-model=provider alias or upstream model.')}
+          >
+            <Input.TextArea rows={3} placeholder={'gpt-5=claude-sonnet-4\nks-primary-gpt=Claude'} />
           </Form.Item>
-          <Form.Item label={text('故障转移优先级', 'Failover priority')} name="failoverPriority" extra={text('数值越小越优先；当前供应商始终先尝试。', 'Lower values run first; the current provider is always attempted first.')}>
-            <InputNumber min={0} max={10000} />
-          </Form.Item>
-        </Space>
-        <Form.Item
-          label={text('备用模型映射', 'Failover model mappings')}
-          name="failoverModelMappings"
-          extra={text('每行一个：请求模型=该供应商模型别名或上游模型。', 'One per line: requested-model=provider alias or upstream model.')}
-        >
-          <Input.TextArea rows={3} placeholder={'gpt-5=claude-sonnet-4\nks-primary-gpt=Claude'} />
-        </Form.Item>
+        ) : null}
         <Form.Item
           label={text('API 格式', 'API format')}
           name="apiFormat"

@@ -144,6 +144,45 @@ export interface AppUpdateInfo {
   errorMessage?: string;
 }
 
+export interface CredentialMigrationCredential {
+  providerId: string;
+  apiKey: string;
+}
+
+export interface CredentialMigrationPackage {
+  format: 'codex-key-switcher-credential-migration';
+  schemaVersion: 1;
+  source: 'electron-safe-storage';
+  exportedAt: number;
+  providers: Provider[];
+  credentials: CredentialMigrationCredential[];
+  currentProviderId?: string;
+}
+
+export interface CredentialMigrationExportResult {
+  providerCount: number;
+  credentialCount: number;
+  missingCredentialCount: number;
+}
+
+export interface EncryptedCredentialMigrationPackage {
+  format: 'codex-key-switcher-encrypted-migration';
+  schemaVersion: 2;
+  algorithm: 'aes-256-gcm';
+  kdf: 'pbkdf2-sha256';
+  iterations: 600000;
+  salt: string;
+  nonce: string;
+  ciphertext: string;
+}
+
+export interface CredentialMigrationImportResult {
+  importedProviderCount: number;
+  importedCredentialCount: number;
+  completedAt: number;
+  sourceCleanupRequired: boolean;
+}
+
 export interface PortCheckResult {
   available: boolean;
   listenAddress: string;
@@ -291,6 +330,8 @@ export interface DesktopApi {
     chooseCodexConfigDirectory(): Promise<CodexConfigDirectorySettings | null>;
     checkForUpdates(): Promise<AppUpdateInfo>;
     openUpdateDownload(downloadUrl: string): Promise<void>;
+    exportCredentialMigration(passphrase: string): Promise<CredentialMigrationExportResult>;
+    importCredentialMigration(input: EncryptedCredentialMigrationPackage, passphrase: string): Promise<CredentialMigrationImportResult>;
   };
   providers: {
     list(): Promise<Provider[]>;
@@ -326,3 +367,11 @@ export interface DesktopApi {
     saveSettings(input: UsageSettings): Promise<UsageSettings>;
   };
 }
+
+export type {
+  DesktopCommandError,
+  DesktopCommandGroup,
+  DesktopCommandName,
+  DesktopCommandRequest,
+  DesktopCommandResult,
+} from './desktop-command-contract';

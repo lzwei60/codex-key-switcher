@@ -1,0 +1,30 @@
+{
+  "valid": [
+    "event: response.created\r\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fixture-1\",\"status\":\"in_progress\"}}\r\n\r\n",
+    ": keep-alive\r\n\r\n",
+    "event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}\r\n\r\n",
+    "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fixture-1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3}}}\r\n\r\n"
+  ],
+  "terminalError": [
+    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fixture-2\",\"status\":\"in_progress\"}}\n\n",
+    "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-fixture-2\",\"status\":\"failed\"}}\n\n"
+  ],
+  "nonTerminal": [
+    "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-fixture-3\",\"status\":\"in_progress\"}}\n\n"
+  ],
+  "repairText": [
+    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg-fixture\",\"output_index\":0,\"delta\":\"Hello \"}\r\n\r\n",
+    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg-fixture\",\"output_index\":0,\"delta\":\"world\"}\r\n\r\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-repair\",\"status\":\"completed\",\"output_text\":\"Hello world\",\"usage\":{\"input_tokens\":7,\"output_tokens\":2,\"input_tokens_details\":{\"cached_tokens\":3}}}}\r\n\r\n"
+  ],
+  "repairToolCalls": [
+    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg-tool\",\"output_index\":0,\"delta\":\"Checking\"}\n\n",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"id\":\"fc-1\",\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":\"call-1\",\"name\":\"shell\",\"arguments\":\"\"}}\n\n",
+    "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"item_id\":\"fc-1\",\"delta\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"fc-1\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call-1\",\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"}}\n\n",
+    "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"id\":\"fc-2\",\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":\"call-2\",\"name\":\"read\",\"arguments\":\"\"}}\n\n",
+    "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"item_id\":\"fc-2\",\"delta\":\"{\\\"path\\\":\\\"README.md\\\"}\"}\n\n",
+    "data: {\"type\":\"response.output_item.done\",\"output_index\":2,\"item\":{\"id\":\"fc-2\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call-2\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}\n\n",
+    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-tools\",\"status\":\"completed\",\"output\":[{\"id\":\"fc-1\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call-1\",\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\\\"}\"},{\"id\":\"fc-2\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"call-2\",\"name\":\"read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}]}}\n\n"
+  ]
+}

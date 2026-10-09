@@ -1,4 +1,5 @@
 import { defaultUsageSettings, type AppPreferences, type AppStartupSettings, type AppUpdateInfo, type CodexConfigDirectorySettings, type DesktopApi, type DiagnosticsReport, type GatewayStatus, type PortCheckResult, type Provider, type RouteSettings, type UsageSettings, type UsageStatsSnapshot } from '@codex-key-switcher/shared';
+import { createTauriDesktopApi } from './tauri-desktop-api';
 
 declare global {
   interface Window {
@@ -84,7 +85,12 @@ function fallbackDiagnosticsReport(): DiagnosticsReport {
 }
 
 export function getDesktopApi(): DesktopApi {
-  if (typeof window !== 'undefined' && window.desktopAPI) return window.desktopAPI;
+  return desktopApiForEnvironment(typeof window === 'undefined' ? undefined : window);
+}
+
+export function desktopApiForEnvironment(environment?: Window): DesktopApi {
+  if (environment?.desktopAPI) return environment.desktopAPI;
+  if (environment && '__TAURI_INTERNALS__' in environment) return createTauriDesktopApi();
 
   return {
     app: {
@@ -115,6 +121,8 @@ export function getDesktopApi(): DesktopApi {
         errorMessage: '桌面 API 未连接，当前 Web 预览模式不能检查更新。',
       }),
       openUpdateDownload: async (): Promise<void> => undefined,
+      exportCredentialMigration: async () => { throw new Error('浏览器预览模式不支持凭据迁移。'); },
+      importCredentialMigration: async () => { throw new Error('浏览器预览模式不支持凭据迁移。'); },
     },
     providers: {
       list: async () => [...fallbackProviders],

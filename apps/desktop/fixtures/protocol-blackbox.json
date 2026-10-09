@@ -1,0 +1,159 @@
+{
+  "request": {
+    "model": "upstream-model",
+    "instructions": "Keep secrets private",
+    "input": [
+      { "role": "user", "content": "inspect project" },
+      { "type": "function_call", "call_id": "call-1", "name": "shell", "arguments": "{}" },
+      { "type": "function_call_output", "call_id": "call-1", "output": "README.md" },
+      { "role": "user", "content": "continue" }
+    ],
+    "max_output_tokens": 128,
+    "tools": [
+      {
+        "type": "function",
+        "name": "read_file",
+        "description": "Read a file",
+        "parameters": { "type": "object", "properties": { "path": { "type": "string" } } }
+      }
+    ]
+  },
+  "chatRequest": {
+    "model": "upstream-model",
+    "messages": [
+      { "role": "system", "content": "Keep secrets private" },
+      { "role": "user", "content": "inspect project" },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          { "id": "call-1", "type": "function", "function": { "name": "shell", "arguments": "{}" } }
+        ]
+      },
+      { "role": "tool", "tool_call_id": "call-1", "content": "README.md" },
+      { "role": "user", "content": "continue" }
+    ],
+    "stream": false,
+    "max_tokens": 128,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": { "type": "object", "properties": { "path": { "type": "string" } }
+          }
+        }
+      }
+    ]
+  },
+  "anthropicRequest": {
+    "model": "upstream-model",
+    "system": "Keep secrets private",
+    "messages": [
+      { "role": "user", "content": [{ "type": "text", "text": "inspect project" }] },
+      {
+        "role": "assistant",
+        "content": [
+          { "type": "tool_use", "id": "call-1", "name": "shell", "input": {} }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "call-1", "content": "README.md" },
+          { "type": "text", "text": "continue" }
+        ]
+      }
+    ],
+    "max_tokens": 128,
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file",
+        "input_schema": { "type": "object", "properties": { "path": { "type": "string" } }
+        }
+      }
+    ]
+  },
+  "chatResponse": {
+    "id": "chat-blackbox",
+    "choices": [
+      {
+        "message": {
+          "content": "done",
+          "tool_calls": [
+            { "id": "call-2", "function": { "name": "read_file", "arguments": "{\"path\":\"README.md\"}" } }
+          ]
+        }
+      }
+    ],
+    "usage": { "prompt_tokens": 11, "completion_tokens": 7 }
+  },
+  "anthropicResponse": {
+    "id": "msg-blackbox",
+    "content": [
+      { "type": "text", "text": "done" },
+      { "type": "tool_use", "id": "call-2", "name": "read_file", "input": { "path": "README.md" } }
+    ],
+    "usage": { "input_tokens": 13, "output_tokens": 8 }
+  },
+  "expectedOutput": [
+    { "type": "message", "text": "done" },
+    { "type": "function_call", "callId": "call-2", "name": "read_file" }
+  ],
+  "responsesCompatibility": [
+    {
+      "baseURL": "https://api.xiaomimimo.com/v1",
+      "request": {
+        "model": "upstream-model",
+        "input": "hello",
+        "stream": false,
+        "max_output_tokens": 8,
+        "tools": [
+          { "type": "web_search" },
+          { "type": "function", "name": "read_file", "parameters": { "type": "object", "properties": {} } }
+        ],
+        "tool_choice": { "type": "web_search" },
+        "metadata": { "namespace": "codex-internal", "label": "test" }
+      },
+      "expected": {
+        "model": "upstream-model",
+        "input": "hello",
+        "stream": false,
+        "max_output_tokens": 16,
+        "tools": [
+          { "type": "function", "name": "read_file", "parameters": { "type": "object", "properties": {} } }
+        ],
+        "metadata": { "label": "test" }
+      }
+    },
+    {
+      "baseURL": "https://api.openai.com/v1",
+      "request": {
+        "model": "upstream-model",
+        "input": "hello",
+        "stream": false,
+        "max_output_tokens": 8,
+        "tools": [{ "type": "web_search" }],
+        "tool_choice": { "type": "web_search" },
+        "metadata": { "namespace": "codex-internal", "label": "test" }
+      },
+      "expected": {
+        "model": "upstream-model",
+        "input": "hello",
+        "stream": false,
+        "max_output_tokens": 8,
+        "tools": [{ "type": "web_search" }],
+        "tool_choice": { "type": "web_search" },
+        "metadata": { "label": "test" }
+      }
+    }
+  ],
+  "unsupportedConvertedInput": {
+    "model": "upstream-model",
+    "input": [
+      { "role": "user", "content": [{ "type": "input_image", "image_url": "data:image/png;base64,test" }] }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "provider": {
+    "id": "provider-12345678",
+    "name": "Provider",
+    "baseURL": "https://api.example.com/v1",
+    "apiFormat": "responses",
+    "apiKey": "fixture-secret",
+    "models": [
+      { "customName": "GPT 4.1", "model": "gpt-4.1" },
+      { "customName": "GPT 5", "model": "gpt-5", "supportsReasoning": false },
+      { "customName": "Text Only", "model": "text-only", "supportsImages": false }
+    ],
+    "selectedModel": "GPT 4.1",
+    "updatedAt": 1
+  },
+  "cache": {
+    "client_version": "0.133.0",
+    "etag": "catalog-fixture-etag",
+    "models": [
+      {
+        "slug": "gpt-4.1",
+        "display_name": "Cached GPT",
+        "supported_reasoning_levels": [{ "effort": "high", "description": "High" }]
+      }
+    ]
+  },
+  "expected": {
+    "clientVersion": "0.133.0",
+    "etag": "catalog-fixture-etag",
+    "localSlugs": ["ks-provider-gpt-4.1", "ks-provider-gpt-5", "ks-provider-text-only"],
+    "directSlugs": ["gpt-4.1", "gpt-5", "text-only"]
+  }
+}

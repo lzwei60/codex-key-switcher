@@ -141,7 +141,7 @@ http://127.0.0.1:3456/v1
 通用：
 
 - Codex 配置目录：默认 `~/.codex`，也可以手动选择。
-- 开机自启：支持 macOS 和 Windows。
+- 开机自启：Tauri Preview 支持 macOS/Linux 当前用户启动项；Windows 需待目标平台接入与验收。Electron 正式版仍按现有平台策略运行。
 - 启动时隐藏窗口：当前主要支持 macOS。
 - 语言：中文或 English。
 - 外观主题：跟随系统、浅色、深色。

@@ -1,9 +1,9 @@
 'use client';
 
-import { CloudDownloadOutlined, FolderOpenOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CloudDownloadOutlined, FolderOpenOutlined, ImportOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, App, Button, Card, Descriptions, Form, Input, InputNumber, Segmented, Space, Switch, Tabs, Tag, Typography } from 'antd';
-import type { AppPreferences, AppStartupSettings, AppUpdateInfo, CodexConfigDirectorySettings, ConnectionMode, RouteSettings as RouteSettingsValue, UsageSettings as UsageSettingsValue } from '@codex-key-switcher/shared';
+import type { AppPreferences, AppStartupSettings, AppUpdateInfo, CodexConfigDirectorySettings, ConnectionMode, EncryptedCredentialMigrationPackage, RouteSettings as RouteSettingsValue, UsageSettings as UsageSettingsValue } from '@codex-key-switcher/shared';
 import { PageHeader } from '../layout/AppShell';
 import type { SettingsTabKey } from '../../types/navigation';
 import { useAppPreferences } from '../../lib/app-preferences';
@@ -25,22 +25,104 @@ export function SettingsPage({
 }>) {
   const { text } = useAppPreferences();
   return (
-    <>
+    <div className="settings-page">
       <PageHeader
         description={text('管理 Codex 配置目录、本地路由、启动项和界面偏好。', 'Manage Codex config path, local gateway, startup, and UI preferences.')}
         title={text('设置', 'Settings')}
       />
       <Tabs
+        className="settings-tabs"
         activeKey={activeTab}
         items={[
           { key: 'general', label: text('通用', 'General'), children: <GeneralSettings /> },
           { key: 'route', label: text('路由', 'Gateway'), children: <RouteSettings /> },
           { key: 'usage', label: text('统计与隐私', 'Usage & Privacy'), children: <UsageSettings /> },
           { key: 'updates', label: text('更新', 'Updates'), children: <UpdateSettings /> },
+          { key: 'migration', label: text('迁移', 'Migration'), children: <CredentialMigrationSettings /> },
         ]}
         onChange={(key) => onTabChange(key as SettingsTabKey)}
       />
-    </>
+    </div>
+  );
+}
+
+function CredentialMigrationSettings() {
+  const { message } = App.useApp();
+  const { text } = useAppPreferences();
+  const isTauriPreview = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.desktopAPI;
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+
+  async function exportPackage() {
+    setExporting(true);
+    try {
+      const result = await getDesktopApi().app.exportCredentialMigration(passphrase);
+      if (!result.providerCount) {
+        message.info(text('未导出凭据迁移包。', 'No credential migration package was exported.'));
+        return;
+      }
+      message.success(text(
+        `已导出 ${result.credentialCount} 个凭据，可在 Tauri 版本中导入。`,
+        `Exported ${result.credentialCount} credential(s) for import in the Tauri version.`,
+      ));
+      if (result.missingCredentialCount > 0) {
+        message.warning(text(
+          `${result.missingCredentialCount} 个供应商没有可迁移的 API Key。`,
+          `${result.missingCredentialCount} provider(s) had no credential available for migration.`,
+        ));
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('导出失败', 'Export failed'));
+    } finally {
+      setExporting(false);
+      setPassphrase('');
+    }
+  }
+
+  async function importPackage(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setImporting(true);
+    try {
+      if (file.size > 6 * 1024 * 1024) throw new Error(text('迁移文件超过大小限制。', 'Migration file exceeds the size limit.'));
+      const input = JSON.parse(await file.text()) as EncryptedCredentialMigrationPackage;
+      const result = await getDesktopApi().app.importCredentialMigration(input, passphrase);
+      message.success(text(
+        `已导入 ${result.importedCredentialCount} 个凭据，请关闭旧版 Electron 应用并删除迁移包。`,
+        `Imported ${result.importedCredentialCount} credential(s). Close the old Electron app and delete the migration package.`,
+      ));
+    } catch (error) {
+      message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('导入失败', 'Import failed'));
+    } finally {
+      setImporting(false);
+      setPassphrase('');
+    }
+  }
+
+  return (
+    <Card className="settings-panel">
+          <Alert
+        className="section-alert"
+        showIcon
+        title={text(
+          '凭据迁移包只应通过可信设备和隔离目录传递。导入成功后请立即关闭旧版应用并删除迁移包。',
+          'Transfer credential packages only through a trusted device and an isolated directory. Close the old app and delete the package immediately after import.',
+        )}
+        type="warning"
+      />
+      <Space wrap>
+        <Input.Password aria-label={text('迁移口令', 'Migration passphrase')} placeholder={text('迁移口令（至少 16 字符）', 'Migration passphrase (16+ characters)')} autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} disabled={exporting || importing} />
+        <Button disabled={Array.from(passphrase).length < 16 || importing} icon={<UploadOutlined />} loading={exporting} onClick={() => void exportPackage()}>
+          {isTauriPreview ? text('导出当前凭据迁移包', 'Export current credential package') : text('从 Electron 导出迁移包', 'Export from Electron')}
+        </Button>
+        <Button disabled={Array.from(passphrase).length < 16 || exporting} icon={<ImportOutlined />} loading={importing} onClick={() => document.getElementById('credential-migration-file')?.click()} type="primary">
+          {text('导入到 Tauri', 'Import into Tauri')}
+        </Button>
+        <input accept="application/json,.json" hidden id="credential-migration-file" onChange={(event) => void importPackage(event)} type="file" />
+      </Space>
+    </Card>
   );
 }
 
@@ -97,6 +179,7 @@ function UsageSettings() {
       <Form
         form={form}
         initialValues={{ enabled: true, retentionDays: 30, maxRecords: 10_000 }}
+        className="settings-form settings-form--usage"
         layout="vertical"
         onFinish={(values) => void saveSettings(values as UsageSettingsValue)}
       >
@@ -198,7 +281,7 @@ function UpdateSettings() {
   const platformLabel = updatePlatformLabel(updateInfo?.platform, text);
 
   return (
-    <Card>
+    <Card className="settings-panel">
       <Descriptions
         bordered
         column={1}
@@ -267,6 +350,7 @@ function GeneralSettings() {
   const [form] = Form.useForm<GeneralFormValue>();
   const { message } = App.useApp();
   const { preferences, setPreferences, text } = useAppPreferences();
+  const isTauriPreview = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.desktopAPI;
   const [settings, setSettings] = useState<AppStartupSettings | null>(null);
   const [codexDirectorySettings, setCodexDirectorySettings] = useState<CodexConfigDirectorySettings | null>(null);
   const [loading, setLoading] = useState(false);
@@ -336,7 +420,7 @@ function GeneralSettings() {
       if (!selected) return;
       setCodexDirectorySettings(selected);
       form.setFieldsValue({ codexConfigDirectory: selected.directory });
-      message.success(text('Codex 配置目录已更新', 'Codex config directory updated'));
+      message.success(isTauriPreview ? text('隔离 Codex 沙箱已准备好', 'Isolated Codex sandbox is ready') : text('Codex 配置目录已更新', 'Codex config directory updated'));
     } catch (error) {
       message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('选择目录失败', 'Failed to choose directory'));
     } finally {
@@ -365,6 +449,7 @@ function GeneralSettings() {
           language: preferences.language,
           theme: preferences.theme,
         }}
+        className="settings-form settings-form--general"
         layout="vertical"
         onFinish={(values) => void saveSettings(values as GeneralFormValue)}
         onValuesChange={(changedValues, values) => {
@@ -377,34 +462,37 @@ function GeneralSettings() {
         }}
       >
         <Form.Item
-          extra={codexDirectorySettings?.isDefault
+          className="settings-directory-item"
+          label={text('Codex 配置目录', 'Codex Config Directory')}
+        >
+          <div className="settings-directory-row">
+            <Form.Item
+              noStyle
+              name="codexConfigDirectory"
+              rules={[{ required: true, message: text('请选择 Codex 配置目录', 'Choose a Codex config directory') }]}
+            >
+              <Input disabled={loading} placeholder="~/.codex" />
+            </Form.Item>
+            <Button
+              icon={<FolderOpenOutlined />}
+              loading={choosingDirectory}
+              onClick={() => void chooseDirectory()}
+              type="text"
+            >
+              {isTauriPreview ? text('创建沙箱', 'Prepare sandbox') : text('选择', 'Choose')}
+            </Button>
+          </div>
+        </Form.Item>
+        <Text className="settings-directory-extra">
+          {codexDirectorySettings?.isDefault
             ? text('当前使用默认 Codex 配置目录。', 'Currently using the default Codex config directory.')
             : text('自定义目录会用于写入 config.toml 和 auth.json。', 'The custom directory is used for config.toml and auth.json.')}
-          label={text('Codex 配置目录', 'Codex Config Directory')}
-          name="codexConfigDirectory"
-          rules={[{ required: true, message: text('请选择 Codex 配置目录', 'Choose a Codex config directory') }]}
-        >
-          <Input
-            disabled={loading}
-            placeholder="~/.codex"
-            suffix={(
-              <Button
-                icon={<FolderOpenOutlined />}
-                loading={choosingDirectory}
-                onClick={() => void chooseDirectory()}
-                size="small"
-                type="text"
-              >
-                {text('选择', 'Choose')}
-              </Button>
-            )}
-          />
-        </Form.Item>
+        </Text>
         <Form.Item label={text('开机自启', 'Open at Login')} name="openAtLogin" valuePropName="checked">
           <Switch disabled={settings?.supported === false} loading={loading} />
         </Form.Item>
         <Form.Item label={text('启动时隐藏窗口', 'Open Hidden')} name="openAsHidden" valuePropName="checked">
-          <Switch disabled={settings?.platform !== 'darwin'} loading={loading} />
+          <Switch disabled={!['darwin', 'linux'].includes(settings?.platform ?? '')} loading={loading} />
         </Form.Item>
         <Form.Item label={text('语言', 'Language')} name="language">
           <Segmented options={[{ label: text('中文', 'Chinese'), value: 'zh-Hans' }, { label: 'English', value: 'en' }]} />
@@ -431,6 +519,7 @@ function RouteSettings() {
   const [form] = Form.useForm<RouteSettingsValue>();
   const { message } = App.useApp();
   const { text } = useAppPreferences();
+  const isTauriPreview = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.desktopAPI;
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -468,6 +557,17 @@ function RouteSettings() {
         message.info(text('连接设置未变化。', 'Connection settings were not changed.'));
         return;
       }
+      if (isTauriPreview) {
+        message.success(text(
+          settings.mode === 'direct_provider'
+            ? (settings.enabled ? '直连供应商配置已应用到 Codex 沙箱。' : '直连供应商配置已停用，Codex 沙箱已恢复。')
+            : (settings.enabled ? '隔离网关已启动，并已同步 Codex 沙箱配置。' : '隔离网关已停止，并已恢复 Codex 沙箱配置。'),
+          settings.mode === 'direct_provider'
+            ? (settings.enabled ? 'The direct provider configuration is applied to the Codex sandbox.' : 'Direct provider mode is stopped and the Codex sandbox is restored.')
+            : (settings.enabled ? 'The isolated gateway is running and the Codex sandbox is synchronized.' : 'The isolated gateway is stopped and the Codex sandbox is restored.'),
+        ));
+        return;
+      }
       const modeName = settings.mode === 'direct_provider'
         ? text('直连供应商', 'Direct Provider')
         : text('本地路由', 'Local Gateway');
@@ -502,13 +602,17 @@ function RouteSettings() {
   }
 
   return (
-    <Card>
-      <Alert
+    <Card className="settings-panel">
+          <Alert
         className="section-alert"
         showIcon
-        title={mode === 'direct_provider'
-          ? text('直连供应商模式不会启动本地监听，也不会记录本地请求日志和 Token 统计；仅支持 Responses 格式供应商。', 'Direct provider mode does not start a local listener and cannot record request logs or token stats. The first version only supports Responses providers.')
-          : text('故障转移会按供应商优先级处理 5xx、超时、网络错误、缺少 Key 和无效 Base URL；4xx 会直接返回。', 'Failover follows provider priority for 5xx, timeout, network, missing-key, and invalid-URL failures. 4xx responses return directly.')}
+          title={isTauriPreview
+            ? mode === 'direct_provider'
+              ? text('Tauri Preview 会把当前 Responses 供应商直接写入隔离 Codex 沙箱，不会修改真实 Codex 目录。', 'Tauri Preview writes the current Responses provider to the isolated Codex sandbox and never modifies the real Codex directory.')
+              : text('Tauri Preview 使用隔离本地网关，不会修改真实 Codex 目录；网关仅绑定本机回环地址。', 'Tauri Preview uses an isolated local gateway, never modifies the real Codex directory, and binds only to the local loopback address.')
+            : mode === 'direct_provider'
+            ? text('直连供应商模式不会启动本地监听，也不会记录本地请求日志和 Token 统计；仅支持 Responses 格式供应商。', 'Direct provider mode does not start a local listener and cannot record request logs or token stats. The first version only supports Responses providers.')
+            : text('故障转移会按供应商优先级处理 5xx、超时、网络错误、缺少 Key 和无效 Base URL；4xx 会直接返回。', 'Failover follows provider priority for 5xx, timeout, network, missing-key, and invalid-URL failures. 4xx responses return directly.')}
         type="info"
       />
       <Form
@@ -528,11 +632,13 @@ function RouteSettings() {
           failoverCooldownMs: 60_000,
           failoverHalfOpenMaxRequests: 1,
         }}
+        className="settings-form settings-form--route"
         layout="vertical"
         onFinish={(values) => void saveSettings(values as RouteSettingsValue)}
       >
         <Form.Item label={text('连接模式', 'Connection Mode')} name="mode">
           <Segmented
+            disabled={loading}
             onChange={(value) => setMode(value as ConnectionMode)}
             options={[
               { label: text('本地路由', 'Local Gateway'), value: 'local_gateway' },

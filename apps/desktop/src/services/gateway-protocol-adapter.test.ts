@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider } from '@codex-key-switcher/shared';
+import nativeResponsesSseFixture from '../../fixtures/responses-native-sse.json';
+import protocolBlackboxFixture from '../../fixtures/protocol-blackbox.json';
 import {
+  adaptUpstreamResponseToResponses,
   NativeResponsesSSEAdapter,
   ResponsesSSEAdapter,
   upstreamPathForGatewayPath,
@@ -9,6 +12,58 @@ import {
 } from './gateway-protocol-adapter';
 
 describe('gateway protocol adapter', () => {
+  it('matches shared Responses upstream compatibility cases', () => {
+    for (const fixture of protocolBlackboxFixture.responsesCompatibility) {
+      const provider = providerFixture({
+        baseURL: fixture.baseURL,
+        apiFormat: 'responses',
+        models: [{ customName: 'Blackbox', model: 'upstream-model' }],
+        selectedModel: 'Blackbox',
+      });
+      const result = upstreamRequestBodyFromResponsesBody(jsonBuffer(fixture.request), provider, false);
+      expect(JSON.parse(result.body.toString('utf8'))).toEqual(fixture.expected);
+    }
+  });
+
+  it('rejects the shared image-history case for converted protocols', () => {
+    for (const apiFormat of ['chat_completions', 'anthropic_messages'] as const) {
+      const provider = providerFixture({
+        apiFormat,
+        models: [{ customName: 'Blackbox', model: 'upstream-model' }],
+        selectedModel: 'Blackbox',
+      });
+      expect(() => upstreamRequestBodyFromResponsesBody(
+        jsonBuffer(protocolBlackboxFixture.unsupportedConvertedInput), provider, false,
+      )).toThrow('image/file history');
+    }
+  });
+
+  it('matches the shared Chat and Anthropic protocol blackbox fixture', () => {
+    const base = providerFixture({
+      models: [{ customName: 'Blackbox', model: 'upstream-model' }],
+      selectedModel: 'Blackbox',
+    });
+    const chat = { ...base, apiFormat: 'chat_completions' as const };
+    const anthropic = { ...base, apiFormat: 'anthropic_messages' as const };
+    const input = jsonBuffer(protocolBlackboxFixture.request);
+    expect(JSON.parse(upstreamRequestBodyFromResponsesBody(input, chat, false).body.toString())).toEqual(protocolBlackboxFixture.chatRequest);
+    expect(JSON.parse(upstreamRequestBodyFromResponsesBody(input, anthropic, false).body.toString())).toEqual(protocolBlackboxFixture.anthropicRequest);
+
+    const chatResponse = JSON.parse(adaptUpstreamResponseToResponses(
+      jsonBuffer(protocolBlackboxFixture.chatResponse), chat, '/responses', 'upstream-model',
+    ).body.toString()) as { output: Array<Record<string, unknown>> };
+    const anthropicResponse = JSON.parse(adaptUpstreamResponseToResponses(
+      jsonBuffer(protocolBlackboxFixture.anthropicResponse), anthropic, '/responses', 'upstream-model',
+    ).body.toString()) as { output: Array<Record<string, unknown>> };
+    for (const response of [chatResponse, anthropicResponse]) {
+      expect(response.output.map((item) => ({
+        type: item.type,
+        text: item.type === 'message' ? (item.content as Array<Record<string, unknown>>)[0]?.text : undefined,
+        callId: item.call_id,
+        name: item.name,
+      }))).toEqual(protocolBlackboxFixture.expectedOutput);
+    }
+  });
   it('removes hosted Responses tools for non-OpenAI upstreams while keeping function tools', () => {
     const adapted = upstreamRequestBodyFromResponsesBody(jsonBuffer({
       model: 'gpt-5',
@@ -209,6 +264,57 @@ describe('gateway protocol adapter', () => {
     ].join('');
 
     expect(output).toBe(input);
+  });
+
+  it('matches the shared native Responses terminal-event fixture', () => {
+    const adapter = new NativeResponsesSSEAdapter('gpt-5');
+    const input = nativeResponsesSseFixture.valid.join('');
+    const output = [...adapter.processTextChunk(input), ...adapter.finish()].join('');
+    const expected = nativeResponsesSseFixture.valid
+      .map((block) => block.replace(/\r\n\r\n$/, '\n\n'))
+      .join('');
+    expect(output).toBe(expected);
+    expect(adapter.failed).toBe(false);
+
+    const failed = new NativeResponsesSSEAdapter('gpt-5');
+    const failedOutput = [
+      ...nativeResponsesSseFixture.terminalError.flatMap((block) => failed.processTextChunk(block)),
+      ...failed.finish(),
+    ].join('');
+    expect(sseEventTypes(failedOutput)).toEqual(['response.created', 'response.failed']);
+    expect(failed.failed).toBe(true);
+
+    for (const type of ['response.failed', 'response.incomplete', 'error']) {
+      const adapterForTerminal = new NativeResponsesSSEAdapter('gpt-5');
+      const blocks = nativeResponsesSseFixture.terminalError.map((block) => {
+        const payload = JSON.parse(block.split('data: ')[1]?.split('\n')[0] ?? '{}') as Record<string, unknown>;
+        const response = payload.response as Record<string, unknown>;
+        payload.type = type;
+        response.status = type === 'response.incomplete' ? 'incomplete' : 'failed';
+        return `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+      });
+      const outputForTerminal = blocks.flatMap((block) => adapterForTerminal.processTextChunk(block)).join('');
+      expect(sseEventTypes(outputForTerminal)).toContain(type);
+      expect(sseEventTypes(outputForTerminal)).not.toContain('response.completed');
+    }
+  });
+
+  it('repairs the shared text-only stream fixture with a valid terminal lifecycle', () => {
+    const adapter = new NativeResponsesSSEAdapter('gpt-5');
+    const output = nativeResponsesSseFixture.repairText
+      .flatMap((block) => adapter.processTextChunk(block))
+      .concat(adapter.finish())
+      .join('');
+    expect(sseEventTypes(output)).toEqual([
+      'response.created', 'response.in_progress', 'response.output_item.added',
+      'response.content_part.added', 'response.output_text.delta', 'response.output_text.delta',
+      'response.output_text.done', 'response.content_part.done', 'response.output_item.done',
+      'response.completed',
+    ]);
+    expect(output).toContain('Hello world');
+    expect(output).toContain('"input_tokens":7');
+    expect(output).toContain('"cached_tokens":3');
+    expect(adapter.failed).toBe(false);
   });
 
   it('waits through SSE heartbeats before deciding whether a text stream needs repair', () => {

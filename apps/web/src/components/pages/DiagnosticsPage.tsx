@@ -11,6 +11,7 @@ export function DiagnosticsPage() {
   const { message } = App.useApp();
   const { report, loading, refresh, setReport } = useDiagnostics();
   const { text } = useAppPreferences();
+  const isTauriPreview = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.desktopAPI;
 
   async function runAction(action: () => Promise<DiagnosticsReport | void>, successText: string) {
     try {
@@ -56,7 +57,7 @@ export function DiagnosticsPage() {
     <Card className="plain-panel" loading={loading}>
       <section className="diagnostics-compact">
         <h2>{text('诊断与恢复', 'Diagnostics and recovery')}</h2>
-        <p>{text('本地路由、Codex 配置和恢复备份状态正常。', 'Review local gateway, Codex configuration, and restore backup status.')}</p>
+        <p>{isTauriPreview ? text('仅检查 Tauri 隔离目录内的 Codex 配置。', 'Codex configuration is checked only in the isolated Tauri directory.') : text('本地路由、Codex 配置和恢复备份状态正常。', 'Review local gateway, Codex configuration, and restore backup status.')}</p>
         <div className="diagnostics-grid">
           {rows.map(([label, value]) => (
             <div className="diagnostics-row" key={label}>
@@ -67,19 +68,20 @@ export function DiagnosticsPage() {
         </div>
         <Space className="diagnostics-actions" wrap>
           <Button
+            disabled={report.connectionMode === 'local_gateway' && !report.gatewayRunning}
             loading={loading}
-            onClick={() => void runAction(() => getDesktopApi().diagnostics.resyncCodexConfig(), text('Codex 配置已重新同步', 'Codex configuration resynchronized'))}
+            onClick={() => void runAction(() => getDesktopApi().diagnostics.resyncCodexConfig(), isTauriPreview ? text('隔离 Codex 配置已同步', 'Isolated Codex configuration synchronized') : text('Codex 配置已重新同步', 'Codex configuration resynchronized'))}
             type="primary"
           >
-            {text('重新同步 Codex 配置', 'Resynchronize Codex configuration')}
+            {isTauriPreview ? text('同步隔离 Codex 配置', 'Sync isolated Codex configuration') : text('重新同步 Codex 配置', 'Resynchronize Codex configuration')}
           </Button>
-          <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.stopGatewayAndRestoreCodex(), text('已停止路由并恢复 Codex 原配置', 'Gateway stopped and original Codex configuration restored'))}>
-            {text('停用路由并恢复 Codex 原配置', 'Stop gateway and restore original Codex configuration')}
+          <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.stopGatewayAndRestoreCodex(), isTauriPreview ? text('隔离 Codex 配置已恢复', 'Isolated Codex configuration restored') : text('已停止路由并恢复 Codex 原配置', 'Gateway stopped and original Codex configuration restored'))}>
+            {isTauriPreview ? text('恢复隔离 Codex 配置', 'Restore isolated Codex configuration') : text('停用路由并恢复 Codex 原配置', 'Stop gateway and restore original Codex configuration')}
           </Button>
           <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.prepareUninstall(), text('已准备卸载', 'Uninstall preparation completed'))}>
             {text('准备卸载', 'Prepare uninstall')}
           </Button>
-          <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.openRestoreScriptDirectory(), text('已打开恢复脚本目录', 'Restore script directory opened'))}>
+          <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.openRestoreScriptDirectory(), text('已打开恢复脚本目录', 'Restore directory opened'))}>
             {text('打开恢复脚本目录', 'Open restore script directory')}
           </Button>
           <Button onClick={() => void runAction(() => getDesktopApi().diagnostics.copyReport(), text('诊断信息已复制', 'Diagnostic report copied'))}>

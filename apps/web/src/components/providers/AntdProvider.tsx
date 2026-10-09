@@ -17,9 +17,13 @@ export function AntdProvider({ children }: Readonly<{ children: ReactNode }>) {
 function ThemedAntdProvider({ children }: Readonly<{ children: ReactNode }>) {
   const { effectiveTheme, isEnglish } = useAppPreferences();
   const dark = effectiveTheme === 'dark';
+  const styleNonce = typeof document === 'undefined'
+    ? undefined
+    : document.querySelector<HTMLStyleElement>('style[nonce]')?.nonce;
 
   return (
     <ConfigProvider
+      {...(styleNonce ? { csp: { nonce: styleNonce } } : {})}
       locale={isEnglish ? enUS : zhCN}
       theme={{
         algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,

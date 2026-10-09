@@ -12,6 +12,8 @@ const desktopAPI: DesktopApi = {
     chooseCodexConfigDirectory: () => ipcRenderer.invoke('app:choose-codex-config-directory'),
     checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
     openUpdateDownload: (downloadUrl) => ipcRenderer.invoke('app:open-update-download', downloadUrl),
+    exportCredentialMigration: (passphrase) => ipcRenderer.invoke('app:export-credential-migration', passphrase),
+    importCredentialMigration: (input, passphrase) => ipcRenderer.invoke('app:import-credential-migration', input, passphrase),
   },
   providers: {
     list: () => ipcRenderer.invoke('providers:list'),

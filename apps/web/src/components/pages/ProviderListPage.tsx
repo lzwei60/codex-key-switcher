@@ -53,6 +53,7 @@ export function ProviderListPage({
 }>) {
   const { message, modal } = App.useApp();
   const { text } = useAppPreferences();
+  const isTauriPreview = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window && !window.desktopAPI;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [saving, setSaving] = useState(false);
@@ -119,12 +120,12 @@ export function ProviderListPage({
       await onRefreshGateway();
       await refreshRouteSettings();
       if (isDirectMode) {
-        message.success(text(
+        message.success(isTauriPreview ? text('当前供应商已更新，Codex 沙箱已自动同步。', 'Provider selected. The Codex sandbox was synchronized automatically.') : text(
           `已写入 ${nextProvider?.name ?? '新供应商'} 的直连配置和模型列表，请重启 Codex 使其生效。`,
           `Direct configuration and model list for ${nextProvider?.name ?? 'the new provider'} were written. Restart Codex to apply them.`,
         ));
       } else {
-        message.success(text('当前供应商和模型列表已更新，请重启 Codex 刷新模型 UI', 'The current provider and model list were updated. Restart Codex to refresh the model UI.'));
+        message.success(isTauriPreview ? text('当前供应商已更新，隔离网关和 Codex 沙箱已同步。', 'Provider selected. The isolated gateway and Codex sandbox were synchronized.') : text('当前供应商和模型列表已更新，请重启 Codex 刷新模型 UI', 'The current provider and model list were updated. Restart Codex to refresh the model UI.'));
       }
     } catch (error) {
       message.error(error instanceof Error ? localizeRuntimeMessage(error.message, text) : text('切换失败', 'Switch failed'));
@@ -168,7 +169,7 @@ export function ProviderListPage({
       await onRefreshGateway();
       await refreshRouteSettings();
       const modeName = currentSettings.mode === 'direct_provider' ? text('直连供应商', 'Direct provider') : text('本地路由', 'Local gateway');
-      message.success(text(
+      message.success(isTauriPreview ? text('隔离预览网关状态已更新，可在本地回环地址转发请求。', 'Isolated preview gateway updated; requests can be routed through the local loopback gateway.') : text(
         `${modeName}${checked ? '已重新启用' : '已停用'}，并已写入Codex配置。请重启Codex。`,
         `${modeName} ${checked ? 'has been enabled again' : 'has been disabled'} and written to the Codex configuration. Restart Codex.`,
       ));
@@ -214,7 +215,7 @@ export function ProviderListPage({
               menu={{
                 items: [
                   { key: 'safe', label: text('导出配置，不含 API Key', 'Export configuration without API keys') },
-                  { key: 'keys', danger: true, label: text('导出配置，包含 API Key', 'Export configuration with API keys') },
+                  { key: 'keys', danger: true, disabled: isTauriPreview, label: text('导出配置，包含 API Key', 'Export configuration with API keys') },
                 ],
                 onClick: ({ key }) => void runExport(key === 'keys'),
               }}
@@ -354,7 +355,7 @@ function ProviderModelsSummary({ provider, emptyText }: Readonly<{ provider: Pro
   const summary = models.join(', ');
   return (
     <Tooltip
-      overlayClassName="provider-models-tooltip"
+      classNames={{ root: 'provider-models-tooltip' }}
       placement="topLeft"
       title={summary || emptyText}
     >
@@ -367,7 +368,7 @@ function ProviderSelectedModelSummary({ provider, emptyText }: Readonly<{ provid
   const selectedModel = provider.selectedModel || emptyText;
   return (
     <Tooltip
-      overlayClassName="provider-models-tooltip"
+      classNames={{ root: 'provider-models-tooltip' }}
       placement="topLeft"
       title={selectedModel}
     >

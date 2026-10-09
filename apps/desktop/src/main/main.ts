@@ -10,6 +10,8 @@ import {
   type AppStartupSettings,
   type AppUpdateInfo,
   type AppUpdatePlatformKey,
+  type CredentialMigrationExportResult,
+  type CredentialMigrationPackage,
   type ConnectionMode,
   type CodexConfigDirectorySettings,
   type DirectSessionTarget,
@@ -32,7 +34,6 @@ import {
   ProviderService,
   UsageService,
   directSessionTargetForProvider,
-  planRouteSettingsChange,
   providerSelectedCatalogModel,
   providerSelectedDisplayModel,
   providerSelectedModel,
@@ -46,6 +47,10 @@ import { ModelCatalogService } from '../services/model-catalog-service';
 import { ProviderFileRepository } from '../services/provider-file-repository';
 import { UsageFileRepository } from '../services/usage-file-repository';
 import { writeTextFile } from '../services/json-file';
+import { ProviderApplicationService } from '../application/provider-application-service';
+import { desktopPaths } from '../application/desktop-paths';
+import { RouteApplicationService } from '../application/route-application-service';
+import { encryptCredentialMigration, validateMigrationPassphrase } from '../services/credential-migration-crypto';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !app.isPackaged;
@@ -63,6 +68,8 @@ let codexConfigService: CodexConfigService | null = null;
 let usageService: UsageService | null = null;
 let localGatewayRuntime: LocalGatewayRuntime | null = null;
 let modelCatalogService: ModelCatalogService | null = null;
+let providerApplicationService: ProviderApplicationService | null = null;
+let routeApplicationService: RouteApplicationService | null = null;
 let isQuitting = false;
 let quitFlowStarted = false;
 let gatewayStatusCache: GatewayStatus = {
@@ -354,59 +361,11 @@ function showProviderSwitchFailureMessage(input: { message: string; detail: stri
 }
 
 async function switchCurrentProviderTransactionally(providerId: string): Promise<void> {
-  const providerService = getProviderService();
-  const previousProvider = await providerService.current();
-  const routeSettings = await getRouteSettings();
-  const nextProvider = (await providerService.list()).find((provider) => provider.id === providerId);
-  if (!nextProvider) throw new Error('配置不存在。');
-  if (routeSettings.enabled && routeSettings.mode === 'direct_provider') {
-    await assertProviderSupportsDirectMode(nextProvider);
-  }
-
-  await providerService.setCurrent(providerId);
-  try {
-    await syncCodexForCurrentMode();
-    await refreshGatewayStatus();
-    await notifyConversationSwitch({
-      previousProvider,
-      nextProvider,
-      switchedTarget: 'provider',
-    });
-  } catch (error) {
-    if (previousProvider) await providerService.setCurrent(previousProvider.id).catch(() => undefined);
-    await syncCodexForCurrentMode().catch(() => undefined);
-    await refreshGatewayStatus().catch(() => undefined);
-    throw error;
-  }
+  await getProviderApplicationService().switchProvider(providerId);
 }
 
 async function switchSelectedModelTransactionally(providerId: string, model: string): Promise<void> {
-  const providerService = getProviderService();
-  const previousProvider = (await providerService.list()).find((provider) => provider.id === providerId);
-  if (!previousProvider) throw new Error('配置不存在。');
-  const routeSettings = await getRouteSettings();
-
-  await providerService.setSelectedModel(providerId, model);
-  const nextProvider = (await providerService.list()).find((provider) => provider.id === providerId);
-  if (!nextProvider) throw new Error('配置不存在。');
-  if (routeSettings.enabled && routeSettings.mode === 'direct_provider') {
-    await assertProviderSupportsDirectMode(nextProvider);
-  }
-
-  try {
-    await syncCodexForCurrentMode();
-    await refreshGatewayStatus();
-    await notifyConversationSwitch({
-      previousProvider,
-      nextProvider,
-      switchedTarget: 'model',
-    });
-  } catch (error) {
-    await providerService.setSelectedModel(providerId, previousProvider.selectedModel).catch(() => undefined);
-    await syncCodexForCurrentMode().catch(() => undefined);
-    await refreshGatewayStatus().catch(() => undefined);
-    throw error;
-  }
+  await getProviderApplicationService().switchModel(providerId, model);
 }
 
 async function notifyFirstProviderRouteAppliedIfNeeded(hadProviders: boolean): Promise<void> {
@@ -527,41 +486,15 @@ function registerIpcHandlers() {
   ipcMain.handle('app:choose-codex-config-directory', () => chooseCodexConfigDirectory());
   ipcMain.handle('app:check-for-updates', () => checkForAppUpdates());
   ipcMain.handle('app:open-update-download', (_event, downloadUrl: string) => openUpdateDownload(downloadUrl));
+  ipcMain.handle('app:export-credential-migration', (_event, passphrase: string) => exportCredentialMigration(passphrase));
+  ipcMain.handle('app:import-credential-migration', () => {
+    throw new Error('Electron 版本不接收 Tauri 凭据迁移包。');
+  });
   ipcMain.handle('providers:list', () => getProviderService().list());
   ipcMain.handle('providers:save', async (_event, input: ProviderInput) => {
-    validateProviderInputModelsLocally(input);
-    const providerService = getProviderService();
-    const providers = await providerService.list();
-    await assertProviderSaveSupportsCurrentMode(input, providers);
-    const hadProviders = providers.length > 0;
-    const previous = input.id?.trim()
-      ? providers.find((item) => item.id === input.id?.trim()) ?? null
-      : null;
-    const previousApiKey = previous ? await providerService.currentApiKey(previous) : null;
-    const provider = await providerService.upsert(input);
-    try {
-      await syncCodexForCurrentMode();
-      await notifyFirstProviderRouteAppliedIfNeeded(hadProviders);
-      return provider;
-    } catch (error) {
-      if (previous) {
-        await providerService.restore(previous, previousApiKey).catch(() => undefined);
-      } else {
-        await providerService.delete(provider.id).catch(() => undefined);
-      }
-      await syncCodexForCurrentMode().catch(() => undefined);
-      throw error;
-    }
+    return getProviderApplicationService().save(input);
   });
-  ipcMain.handle('providers:delete', async (_event, id: string) => {
-    await getProviderService().delete(id);
-    const remainingProviders = await getProviderService().list();
-    if (!remainingProviders.length) {
-      await stopGateway({ strictRestore: true, restoreManagedBackup: true });
-    } else {
-      await syncCodexForCurrentMode();
-    }
-  });
+  ipcMain.handle('providers:delete', (_event, id: string) => getProviderApplicationService().delete(id));
   ipcMain.handle('providers:set-current', async (_event, id: string) => {
     await switchCurrentProviderTransactionally(id);
   });
@@ -1141,7 +1074,7 @@ async function saveCodexConfigDirectory(directory: string): Promise<CodexConfigD
 
 function restoreScriptFilePath(): string {
   const extension = process.platform === 'win32' ? 'cmd' : 'command';
-  return path.join(app.getPath('userData'), `restore-codex-config.${extension}`);
+  return path.join(appDataPaths().userData, `restore-codex-config.${extension}`);
 }
 
 async function chooseCodexConfigDirectory(): Promise<CodexConfigDirectorySettings | null> {
@@ -1326,88 +1259,31 @@ async function getRouteSettings(): Promise<RouteSettings> {
 }
 
 async function saveRouteSettings(input: RouteSettings): Promise<RouteSettingsSaveResult> {
-  const previousSettings = await getRouteSettings();
-  const normalized = normalizeRouteSettings(input);
-  const changePlan = planRouteSettingsChange(previousSettings, normalized);
-  if (!await confirmConnectionModeSwitch(previousSettings.mode, normalized.mode)) {
-    return {
-      settings: previousSettings,
-      changed: false,
-      cancelled: true,
-    };
-  }
-
-  try {
-    if (!changePlan.enabledChanged && !changePlan.connectionModeChanged && !changePlan.localGatewayRuntimeChanged && !changePlan.codexConfigChanged) {
-      await persistRouteSettings(normalized);
-      gatewayStatusCache = await currentConnectionStatus(normalized);
-      createTray();
-    } else if (!normalized.enabled) {
-      await stopConnectionForMode(previousSettings.mode, { strictRestore: true, restoreManagedBackup: true });
-      if (previousSettings.mode === 'direct_provider') await clearDirectSessionTarget();
-      await persistRouteSettings(normalized);
-      gatewayStatusCache = await currentConnectionStatus(normalized);
-      createTray();
-    } else if (normalized.mode === 'direct_provider') {
-      await assertCurrentProviderSupportsDirectMode();
-      await stopConnectionForMode(previousSettings.mode, {
-        strictRestore: previousSettings.mode === 'local_gateway',
-        restoreManagedBackup: previousSettings.mode === 'local_gateway',
-      });
-      await persistRouteSettings(normalized);
-      if (changePlan.codexConfigChanged) await syncCodexDirectProviderConfig();
-      gatewayStatusCache = await currentConnectionStatus(normalized);
-      createTray();
-    } else if (previousSettings.mode === 'direct_provider') {
-      await persistRouteSettings(normalized);
-      if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) await startLocalGatewayWithSettings(normalized);
-      if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
-    } else if (changePlan.localGatewayRuntimeChanged || !gatewayStatusCache.running) {
-      await startLocalGatewayWithSettings(normalized);
-      await persistRouteSettings(normalized);
-      if (changePlan.codexConfigChanged) await syncCodexLocalGatewayConfig(gatewayStatusCache);
-    } else {
-      await persistRouteSettings(normalized);
-      if (gatewayStatusCache.running) gatewayStatusCache = await getLocalGatewayRuntime().status();
-      gatewayStatusCache = {
-        ...gatewayStatusCache,
-        mode: normalized.mode,
-      };
-      createTray();
-    }
-
-    return {
-      settings: normalized,
-      changed: changePlan.changed,
-      cancelled: false,
-    };
-  } catch (error) {
-    await rollbackRouteSettings(previousSettings).catch((rollbackError) => {
-      console.error('Failed to rollback route settings:', rollbackError);
-    });
-    throw error;
-  }
+  return getRouteApplicationService().save(input);
 }
 
-async function rollbackRouteSettings(settings: RouteSettings): Promise<void> {
-  await getLocalGatewayRuntime().stop().catch(() => undefined);
-  await persistRouteSettings(settings);
-  if (!settings.enabled) {
-    if (settings.mode === 'direct_provider') await clearDirectSessionTarget();
-    await getCodexConfigService().restoreManagedBackup().catch(() => undefined);
-    gatewayStatusCache = await currentConnectionStatus(settings);
-    createTray();
-    return;
-  }
-
-  if (settings.mode === 'direct_provider') {
-    await syncCodexDirectProviderConfig();
-  } else {
-    await startLocalGatewayWithSettings(settings);
-    await syncCodexLocalGatewayConfig(gatewayStatusCache);
-  }
-  gatewayStatusCache = await currentConnectionStatus(settings);
-  createTray();
+function getRouteApplicationService(): RouteApplicationService {
+  routeApplicationService ??= new RouteApplicationService({
+    settings: getRouteSettings,
+    normalize: normalizeRouteSettings,
+    confirmSwitch: confirmConnectionModeSwitch,
+    persist: persistRouteSettings,
+    status: () => gatewayStatusCache,
+    setStatus: (status) => { gatewayStatusCache = status; },
+    connectionStatus: currentConnectionStatus,
+    updateTray: createTray,
+    stopConnection: stopConnectionForMode,
+    clearDirectTarget: clearDirectSessionTarget,
+    assertDirectProvider: assertCurrentProviderSupportsDirectMode,
+    syncDirect: syncCodexDirectProviderConfig,
+    startLocal: startLocalGatewayWithSettings,
+    syncLocal: syncCodexLocalGatewayConfig,
+    runtimeStatus: () => getLocalGatewayRuntime().status(),
+    stopRuntime: async () => { await getLocalGatewayRuntime().stop(); },
+    restoreBackup: () => getCodexConfigService().restoreManagedBackup(),
+    reportRollbackFailure: (error) => { console.error('Failed to rollback route settings:', error); },
+  });
+  return routeApplicationService;
 }
 
 async function persistRouteSettings(settingsValue: RouteSettings): Promise<void> {
@@ -1545,17 +1421,21 @@ async function checkRoutePort(input: Pick<RouteSettings, 'listenAddress' | 'list
 }
 
 function getAppSettingsStore(): AppSettingsStore {
-  if (!appSettingsStore) appSettingsStore = new AppSettingsStore(app.getPath('userData'));
+  if (!appSettingsStore) appSettingsStore = new AppSettingsStore(appDataPaths().userData);
   return appSettingsStore;
 }
 
+function appDataPaths(): ReturnType<typeof desktopPaths> {
+  return desktopPaths(app.getPath('userData'), app.getPath('home'));
+}
+
 function getCredentialStore(): CredentialFileStore {
-  if (!credentialStore) credentialStore = new CredentialFileStore(app.getPath('userData'));
+  if (!credentialStore) credentialStore = new CredentialFileStore(appDataPaths().userData);
   return credentialStore;
 }
 
 function createProviderService(): ProviderService {
-  const dataDirectory = app.getPath('userData');
+  const dataDirectory = appDataPaths().userData;
   return new ProviderService(
     new ProviderFileRepository(dataDirectory),
     getCredentialStore(),
@@ -1567,15 +1447,32 @@ function getProviderService(): ProviderService {
   return providerService;
 }
 
+function getProviderApplicationService(): ProviderApplicationService {
+  providerApplicationService ??= new ProviderApplicationService({
+    providers: getProviderService(),
+    routeSettings: getRouteSettings,
+    syncCodex: syncCodexForCurrentMode,
+    refreshStatus: async () => { await refreshGatewayStatus(); },
+    stopGateway: async () => { await stopGateway({ strictRestore: true, restoreManagedBackup: true }); },
+    validateInput: validateProviderInputModelsLocally,
+    assertSaveSupportsMode: assertProviderSaveSupportsCurrentMode,
+    assertDirectProvider: assertProviderSupportsDirectMode,
+    notifyFirstProvider: notifyFirstProviderRouteAppliedIfNeeded,
+    notifySwitch: notifyConversationSwitch,
+  });
+  return providerApplicationService;
+}
+
 function createCodexConfigService(): CodexConfigService {
-  const dataDirectory = app.getPath('userData');
+  const { userData: dataDirectory, home } = appDataPaths();
   return new CodexConfigService(
-    new CodexFileConfigAdapter(getAppSettingsStore(), app.getPath('home'), dataDirectory),
+    new CodexFileConfigAdapter(getAppSettingsStore(), home, dataDirectory),
   );
 }
 
 function createModelCatalogService(): ModelCatalogService {
-  return new ModelCatalogService(getAppSettingsStore(), app.getPath('home'), app.getPath('userData'));
+  const { home, userData } = appDataPaths();
+  return new ModelCatalogService(getAppSettingsStore(), home, userData);
 }
 
 function getModelCatalogService(): ModelCatalogService {
@@ -1589,7 +1486,7 @@ function getCodexConfigService(): CodexConfigService {
 }
 
 function createUsageService(): UsageService {
-  return new UsageService(new UsageFileRepository(app.getPath('userData')));
+  return new UsageService(new UsageFileRepository(appDataPaths().userData));
 }
 
 function getUsageService(): UsageService {
@@ -2195,6 +2092,52 @@ async function exportProvidersToFile(includeAPIKeys: boolean): Promise<boolean> 
   const payload = await getProviderService().exportPayload(includeAPIKeys);
   await fs.writeFile(result.filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   return true;
+}
+
+async function exportCredentialMigration(passphrase: string): Promise<CredentialMigrationExportResult> {
+  validateMigrationPassphrase(passphrase);
+  const window = BrowserWindow.getFocusedWindow() ?? mainWindow ?? undefined;
+  const result = window
+    ? await dialog.showSaveDialog(window, {
+        title: '导出 Tauri 凭据迁移包',
+        defaultPath: 'codex-key-switcher-credential-migration.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+    : await dialog.showSaveDialog({
+        title: '导出 Tauri 凭据迁移包',
+        defaultPath: 'codex-key-switcher-credential-migration.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+  if (result.canceled || !result.filePath) {
+    return { providerCount: 0, credentialCount: 0, missingCredentialCount: 0 };
+  }
+
+  const providers = await getProviderService().list();
+  const credentials: CredentialMigrationPackage['credentials'] = [];
+  for (const provider of providers) {
+    const apiKey = await getProviderService().currentApiKey(provider);
+    if (!apiKey) throw new Error('供应商缺少可迁移凭据，未导出迁移包。');
+    credentials.push({ providerId: provider.id, apiKey });
+  }
+  if (!providers.length) throw new Error('没有可迁移的供应商。');
+  const payload: CredentialMigrationPackage = {
+    format: 'codex-key-switcher-credential-migration',
+    schemaVersion: 1,
+    source: 'electron-safe-storage',
+    exportedAt: Date.now(),
+    providers,
+    credentials,
+  };
+  const currentProvider = await getProviderService().current();
+  if (currentProvider) payload.currentProviderId = currentProvider.id;
+  const encrypted = await encryptCredentialMigration(payload, passphrase);
+  // Do not chmod the user-selected parent directory or fall back to plaintext.
+  await fs.writeFile(result.filePath, `${JSON.stringify(encrypted)}\n`, { mode: 0o600, flag: 'wx' });
+  return {
+    providerCount: providers.length,
+    credentialCount: credentials.length,
+    missingCredentialCount: providers.length - credentials.length,
+  };
 }
 
 async function importProvidersFromFile(): Promise<number> {

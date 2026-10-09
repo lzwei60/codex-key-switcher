@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -147,6 +148,84 @@ describe('ModelCatalogService', () => {
     const payload = JSON.parse(await fs.readFile(catalogPath, 'utf8')) as { models: Record<string, unknown>[] };
     expect(payload.models[0]?.input_modalities).toEqual(['text']);
   });
+
+  it('matches the shared cross-runtime Catalog fixture', async () => {
+    const fixturePath = fileURLToPath(new URL('../../fixtures/model-catalog-blackbox.json', import.meta.url));
+    const fixture = JSON.parse(await fs.readFile(fixturePath, 'utf8')) as {
+      provider: Provider;
+      cache: Record<string, unknown>;
+      expected: { clientVersion: string; etag: string; localSlugs: string[]; directSlugs: string[] };
+    };
+    await fs.writeFile(path.join(codexDirectory, 'models_cache.json'), JSON.stringify(fixture.cache));
+
+    const localPath = await service.writeForProvider(fixture.provider, 'local_gateway');
+    const local = JSON.parse(await fs.readFile(localPath, 'utf8')) as { client_version: string; etag: string; models: Record<string, unknown>[] };
+    expect(local.client_version).toBe(fixture.expected.clientVersion);
+    expect(local.etag).toBe(fixture.expected.etag);
+    expect(local.models.map((model) => model.slug)).toEqual(fixture.expected.localSlugs);
+    expect(local.models[0]).toMatchObject({
+      display_name: 'GPT 4.1',
+      supported_reasoning_levels: [{ effort: 'high', description: 'High' }],
+      input_modalities: ['text', 'image'],
+    });
+    expect(local.models[1]).toMatchObject({
+      default_reasoning_level: 'none',
+      supports_reasoning_summaries: false,
+      input_modalities: ['text', 'image'],
+    });
+    expect(local.models[2]?.input_modalities).toEqual(['text']);
+
+    if (process.env.CODEX_BINARY) {
+      const result = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-catalog.mjs'), localPath,
+      ], { timeout: 35000, env: process.env });
+      expect(result.stdout).toContain('PASS 3 models');
+    }
+    if (process.env.CODEX_TURN_SMOKE) {
+      const result = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: process.env });
+      expect(result.stdout).toContain('PASS app-server success turn/start');
+      const failed = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'failed' } });
+      expect(failed.stdout).toContain('PASS app-server failed turn/start');
+      const toolCall = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'tool_call' } });
+      expect(toolCall.stdout).toContain('PASS app-server tool_call turn/start');
+      const parallel = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'parallel_tool_calls' } });
+      expect(parallel.stdout).toContain('PASS app-server parallel_tool_calls turn/start');
+      const multiTurn = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'multi_turn' } });
+      expect(multiTurn.stdout).toContain('PASS app-server multi_turn turn/start');
+      const imageInput = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'image_input' } });
+      expect(imageInput.stdout).toContain('PASS app-server image_input turn/start');
+      const imageHistory = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'image_history' } });
+      expect(imageHistory.stdout).toContain('PASS app-server image_history turn/start');
+      const multiImageHistory = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-turn.mjs'), localPath,
+      ], { timeout: 30000, env: { ...process.env, CODEX_TURN_SCENARIO: 'multi_image_history' } });
+      expect(multiImageHistory.stdout).toContain('PASS app-server multi_image_history turn/start');
+    }
+
+    const directPath = await service.writeForProvider(fixture.provider, 'direct_provider');
+    const direct = JSON.parse(await fs.readFile(directPath, 'utf8')) as { models: Record<string, unknown>[] };
+    expect(direct.models.map((model) => model.slug)).toEqual(fixture.expected.directSlugs);
+    if (process.env.CODEX_BINARY) {
+      const result = await promisify(execFile)(process.execPath, [
+        path.resolve('../../scripts/verify-codex-catalog.mjs'), directPath,
+      ], { timeout: 35000, env: process.env });
+      expect(result.stdout).toContain('PASS 3 models');
+    }
+  }, 40000);
 });
 
 function providerFixture(): Provider {
